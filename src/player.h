@@ -35,6 +35,7 @@ void player_prev(player *p);
 void player_stop(player *p);
 void player_seek(player *p, double seconds);      /* absolute */
 void player_jump(player *p, size_t queue_index);  /* start playing queue[i] */
+void player_move(player *p, size_t from, size_t to); /* reorder queue */
 void player_get_queue(player *p, vec *out);       /* copy queue indices */
 dsp_chain *player_dsp(player *p);                 /* thread-safe enough: atomic-ish params */
 
@@ -46,6 +47,7 @@ typedef struct {
     double pos, dur;
     int    rate, channels;
     int    null_output;    /* 1 if no sound device (silent pacing) */
+    double vu_l, vu_r;     /* post-DSP peak levels, 0..1 */
 } player_status;
 void player_get_status(player *p, player_status *st);
 
