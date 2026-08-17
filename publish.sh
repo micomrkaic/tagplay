@@ -17,7 +17,7 @@ set -e
 cd "$(dirname "$0")"
 
 MSG=${1:-update}
-if [ "${TAGPLAY_HTTPS:-0}" = "1" ]; then
+if [ "${TAGPLAY_HTTPS:-1}" = "1" ]; then
     REMOTE=https://github.com/micomrkaic/tagplay.git
 else
     REMOTE=git@github.com:micomrkaic/tagplay.git
