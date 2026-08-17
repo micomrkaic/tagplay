@@ -1,0 +1,816 @@
+/* This file is part of tagplay.
+ *
+ * tagplay -- search-driven music player with audiotard DSP
+ * Copyright (C) 2026  Mico
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "repl.h"
+#include "query.h"
+#include "player.h"
+#include <sys/select.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+
+#define PREVIEW_MAX 15
+
+typedef struct {
+    char   buf[1024];
+    size_t len, cur;         /* content length, cursor */
+    vec    match;            /* vec of size_t, current result */
+    vec    last_good;        /* last successfully parsed result */
+    int    parse_ok;
+    char   sortspec[128];
+    const table *tb;
+    player *pl;
+    vec    sel;              /* size_t table indices, insertion order */
+    int    focus;            /* 0 = query line, 1 = result list */
+    size_t lcur, loff;       /* list cursor + scroll offset */
+    char   msg[160];         /* transient feedback line */
+    double mute_saved;       /* pre-mute gain; 0 = not muted */
+    /* focus: 0 = query line, 1 = result list, 2 = queue view */
+    vec    qview;            /* snapshot of player queue (size_t) */
+    size_t qcur, qoff;       /* queue view cursor + scroll */
+} rstate;
+
+static struct termios orig_tio;
+static void raw_off(void) { tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_tio); }
+static int raw_on(void) {
+    if (tcgetattr(STDIN_FILENO, &orig_tio)) return -1;
+    struct termios t = orig_tio;
+    t.c_lflag &= (tcflag_t)~(ECHO | ICANON);
+    t.c_cc[VMIN] = 1;
+    t.c_cc[VTIME] = 0;
+    return tcsetattr(STDIN_FILENO, TCSAFLUSH, &t);
+}
+
+static int term_rows(void) {
+    struct winsize ws;
+    if (!ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) && ws.ws_row) return ws.ws_row;
+    return 24;
+}
+
+static long sel_find(const rstate *st, size_t ti) {
+    for (size_t i = 0; i < st->sel.len; i++)
+        if (*(size_t *)vec_at((vec *)&st->sel, i) == ti) return (long)i;
+    return -1;
+}
+static void sel_toggle(rstate *st, size_t ti) {
+    long i = sel_find(st, ti);
+    if (i < 0) {
+        vec_push(&st->sel, &ti);
+    } else {
+        memmove((char *)st->sel.data + (size_t)i * sizeof(size_t),
+                (char *)st->sel.data + ((size_t)i + 1) * sizeof(size_t),
+                (st->sel.len - (size_t)i - 1) * sizeof(size_t));
+        st->sel.len--;
+    }
+}
+
+#include <limits.h>
+/* messages and playlist paths are display strings; truncation is fine */
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+static void playlist_dir(char *out, size_t sz) {
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) snprintf(out, sz, "%s/tagplay/playlists", xdg);
+    else {
+        const char *home = getenv("HOME");
+        snprintf(out, sz, "%s/.config/tagplay/playlists", home ? home : ".");
+    }
+}
+static void playlist_path(char *out, size_t sz, const char *name) {
+    char dir[4096];
+    playlist_dir(dir, sizeof dir);
+    snprintf(out, sz, "%s/%s.m3u", dir, name);
+}
+
+static void playlist_save(rstate *st, const char *name, const vec *idx) {
+    char path[4352];
+    playlist_path(path, sizeof path, name);
+    util_mkdirs_for(path);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        snprintf(st->msg, sizeof st->msg, "cannot write %s", path);
+        return;
+    }
+    fprintf(f, "#EXTM3U\n");
+    for (size_t i = 0; i < idx->len; i++) {
+        const track *t = table_at(st->tb, *(size_t *)vec_at((vec *)idx, i));
+        const char *a = track_first_tag(t, "ARTIST");
+        const char *ti = track_first_tag(t, "TITLE");
+        fprintf(f, "#EXTINF:%ld,%s - %s\n", (long)(t->duration + 0.5),
+                a ? a : "?", ti ? ti : "?");
+        char rp[PATH_MAX];
+        fprintf(f, "%s\n", realpath(t->path, rp) ? rp : t->path);
+    }
+    fclose(f);
+    snprintf(st->msg, sizeof st->msg, "saved %zu tracks -> %s", idx->len, name);
+}
+
+static void playlist_load(rstate *st, const char *name) {
+    char path[4352];
+    playlist_path(path, sizeof path, name);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        snprintf(st->msg, sizeof st->msg, "no playlist '%s'", name);
+        return;
+    }
+    /* realpath index of the table, built once per load */
+    size_t n = table_len(st->tb);
+    char **rps = xmalloc(n * sizeof(char *));
+    for (size_t i = 0; i < n; i++) {
+        char rp[PATH_MAX];
+        rps[i] = xstrdup(realpath(table_at(st->tb, i)->path, rp)
+                         ? rp : table_at(st->tb, i)->path);
+    }
+    size_t found = 0, missing = 0;
+    char line[PATH_MAX + 2];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0] || line[0] == '#') continue;
+        long hit = -1;
+        for (size_t i = 0; i < n; i++)
+            if (!strcmp(rps[i], line)) { hit = (long)i; break; }
+        if (hit < 0) { missing++; continue; }
+        if (sel_find(st, (size_t)hit) < 0) vec_push(&st->sel, &(size_t){ (size_t)hit });
+        found++;
+    }
+    fclose(f);
+    for (size_t i = 0; i < n; i++) free(rps[i]);
+    free(rps);
+    if (missing)
+        snprintf(st->msg, sizeof st->msg,
+                 "loaded '%s': %zu tracks (%zu missing from library)",
+                 name, found, missing);
+    else
+        snprintf(st->msg, sizeof st->msg, "loaded '%s': %zu tracks", name, found);
+}
+
+#include <dirent.h>
+static void playlist_list(rstate *st) {
+    char dir[4096];
+    playlist_dir(dir, sizeof dir);
+    DIR *d = opendir(dir);
+    if (!d) {
+        snprintf(st->msg, sizeof st->msg, "no playlists yet");
+        return;
+    }
+    char *w = st->msg;
+    size_t left = sizeof st->msg;
+    int k = snprintf(w, left, "playlists: ");
+    w += k; left -= (size_t)k;
+    struct dirent *e;
+    int any = 0;
+    while ((e = readdir(d)) && left > 2) {
+        char *dot = strstr(e->d_name, ".m3u");
+        if (!dot || dot[4]) continue;
+        *dot = 0;
+        k = snprintf(w, left, "%s%s", any ? ", " : "", e->d_name);
+        if (k < 0 || (size_t)k >= left) break;
+        w += k; left -= (size_t)k;
+        any = 1;
+    }
+    closedir(d);
+    if (!any) snprintf(st->msg, sizeof st->msg, "no playlists yet");
+}
+
+static void total_duration(const table *tb, const vec *idx, char *out, size_t sz) {
+    double s = 0;
+    for (size_t i = 0; i < idx->len; i++)
+        s += table_at(tb, *(size_t *)vec_at((vec *)idx, i))->duration;
+    fmt_duration_long(s, out, sz);
+}
+
+static void print_track_line(const rstate *st, size_t row, size_t ti, int width) {
+    const track *t = table_at(st->tb, ti);
+    const char *artist = track_first_tag(t, "ARTIST");
+    const char *title  = track_first_tag(t, "TITLE");
+    const char *album  = track_first_tag(t, "ALBUM");
+    char dur[16];
+    fmt_duration(t->duration, dur, sizeof dur);
+    int selected = sel_find(st, ti) >= 0;
+    int hot = (st->focus == 1 && row == st->lcur);
+    char line[1024];
+    snprintf(line, sizeof line, "%4zu [%c] %s — %s  [%s]  %s·%s",
+             row + 1, selected ? 'x' : ' ',
+             artist ? artist : "?", title ? title : "?",
+             album ? album : "?", fmt_name(t->fmt), dur);
+    printf("%s%.*s\x1b[0m\r\n", hot ? "\x1b[7m" : "", width, line);
+}
+
+static void rerun(rstate *st) {
+    qnode *q = query_parse(st->buf, 1 /* tolerant */);
+    if (!q && st->len > 0) {
+        st->parse_ok = 0; /* keep last_good on display */
+        return;
+    }
+    query_run(q, st->tb, &st->match);
+    if (st->sortspec[0]) query_sort(st->tb, &st->match, st->sortspec);
+    query_free(q);
+    st->parse_ok = 1;
+    /* copy into last_good */
+    st->last_good.len = 0;
+    for (size_t i = 0; i < st->match.len; i++)
+        vec_push(&st->last_good, vec_at(&st->match, i));
+}
+
+static void redraw_queue(rstate *st) {
+    player_status ps;
+    player_get_status(st->pl, &ps);
+    player_get_queue(st->pl, &st->qview);
+    if (st->qview.len == 0) { st->focus = 0; return; } /* nothing queued */
+
+    int rows = term_rows();
+    int avail = rows - 6;
+    if (avail > PREVIEW_MAX) avail = PREVIEW_MAX;
+    if (avail < 1) avail = 1;
+
+    printf("\x1b[2J\x1b[H");
+    printf("tagplay — QUEUE   j/k move · Enter jump to track · Tab search · :help\r\n\r\n");
+
+    if (st->qcur >= st->qview.len) st->qcur = st->qview.len - 1;
+    if (st->qoff > st->qcur) st->qoff = st->qcur;
+    if (st->qcur >= st->qoff + (size_t)avail)
+        st->qoff = st->qcur - (size_t)avail + 1;
+    size_t n = st->qview.len - st->qoff < (size_t)avail
+             ? st->qview.len - st->qoff : (size_t)avail;
+    for (size_t i = 0; i < n; i++) {
+        size_t row = st->qoff + i;
+        size_t ti = *(size_t *)vec_at(&st->qview, row);
+        const track *t = table_at(st->tb, ti);
+        const char *a = track_first_tag(t, "ARTIST");
+        const char *ttl = track_first_tag(t, "TITLE");
+        char dur[16];
+        fmt_duration(t->duration, dur, sizeof dur);
+        int now = (ps.playing && row == ps.queue_pos);
+        int hot = (row == st->qcur);
+        char line[1024];
+        snprintf(line, sizeof line, "%s%4zu  %s — %s  %s",
+                 now ? "▶ " : "  ", row + 1,
+                 a ? a : "?", ttl ? ttl : "?", dur);
+        printf("%s%.*s\x1b[0m\r\n", hot ? "\x1b[7m" : "", 94, line);
+    }
+    if (st->qoff + n < st->qview.len)
+        printf("      … %zu more\r\n", st->qview.len - st->qoff - n);
+    if (st->msg[0]) printf("\r\n  %s\r\n", st->msg);
+    printf("\r\n");
+
+    /* totals: whole queue, and remaining from the playing position */
+    double tot = 0, left = 0;
+    for (size_t i = 0; i < st->qview.len; i++) {
+        double d = table_at(st->tb,
+                            *(size_t *)vec_at(&st->qview, i))->duration;
+        tot += d;
+        if (ps.playing && i > ps.queue_pos) left += d;
+    }
+    if (ps.playing) left += ps.dur > ps.pos ? ps.dur - ps.pos : 0;
+    char bt[32], bl[32];
+    fmt_duration_long(tot, bt, sizeof bt);
+    fmt_duration_long(left, bl, sizeof bl);
+    printf("queue: %zu · %s", st->qview.len, bt);
+    if (ps.playing) printf(" · %s left", bl);
+    if (st->sel.len) printf("   \x1b[1mselected: %zu\x1b[0m", st->sel.len);
+    printf("\r\n");
+
+    if (ps.playing) {
+        const track *ct = table_at(st->tb, ps.track_index);
+        const char *a = track_first_tag(ct, "ARTIST");
+        const char *ttl = track_first_tag(ct, "TITLE");
+        char cp[16], cd[16];
+        fmt_duration(ps.pos, cp, sizeof cp);
+        fmt_duration(ps.dur, cd, sizeof cd);
+        printf("%s %s — %s   %s/%s   [%zu/%zu]  %dHz  dsp:%s  vol:%d%%%s",
+               ps.playing == 2 ? "⏸" : "▶", a ? a : "?", ttl ? ttl : "?",
+               cp, cd, ps.queue_pos + 1, ps.queue_len, ps.rate,
+               dsp_mode_name(player_dsp(st->pl)),
+               (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
+               ps.null_output ? "  (NO AUDIO DEVICE)" : "");
+    } else {
+        printf("stopped");
+    }
+    fflush(stdout);
+}
+
+static void redraw(rstate *st, size_t prev_count) {
+    if (st->focus == 2) { redraw_queue(st); return; }
+    const vec *show = st->parse_ok ? &st->match : &st->last_good;
+    int rows = term_rows();
+    int avail = rows - 4;
+    if (avail > PREVIEW_MAX) avail = PREVIEW_MAX;
+    if (avail < 0) avail = 0;
+
+    printf("\x1b[2J\x1b[H"); /* clear, home */
+    printf("tagplay — %zu tracks   %s\r\n\r\n", table_len(st->tb),
+           st->focus
+             ? "LIST: Space toggle · a all · i invert · c clear · +/- vol · m mute · Enter play"
+             : "Tab: select tracks · Enter: play · :help");
+    /* clamp cursor and scroll the window around it */
+    if (st->lcur >= show->len) st->lcur = show->len ? show->len - 1 : 0;
+    if (st->loff > st->lcur) st->loff = st->lcur;
+    if (avail > 0 && st->lcur >= st->loff + (size_t)avail)
+        st->loff = st->lcur - (size_t)avail + 1;
+    if (st->loff >= show->len) st->loff = 0;
+    size_t n = show->len - st->loff < (size_t)avail
+             ? show->len - st->loff : (size_t)avail;
+    for (size_t i = 0; i < n; i++) {
+        size_t row = st->loff + i;
+        print_track_line(st, row, *(size_t *)vec_at((vec *)show, row), 96);
+    }
+    if (st->loff + n < show->len)
+        printf("      … %zu more\r\n", show->len - st->loff - n);
+    if (st->msg[0]) printf("\r\n  %s\r\n", st->msg);
+    printf("\r\n");
+
+    player_status ps;
+    player_get_status(st->pl, &ps);
+    if (ps.playing) {
+        const track *ct = table_at(st->tb, ps.track_index);
+        const char *a = track_first_tag(ct, "ARTIST");
+        const char *ti = track_first_tag(ct, "TITLE");
+        char cp[16], cd[16];
+        fmt_duration(ps.pos, cp, sizeof cp);
+        fmt_duration(ps.dur, cd, sizeof cd);
+        printf("%s %s — %s   %s/%s   [%zu/%zu]  %dHz  dsp:%s  vol:%d%%%s\r\n",
+               ps.playing == 2 ? "⏸" : "▶",
+               a ? a : "?", ti ? ti : "?", cp, cd,
+               ps.queue_pos + 1, ps.queue_len, ps.rate,
+               dsp_mode_name(player_dsp(st->pl)),
+               (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
+               ps.null_output ? "  (NO AUDIO DEVICE)" : "");
+    }
+    char tot[32];
+    total_duration(st->tb, show, tot, sizeof tot);
+    const char *dim = st->parse_ok ? "" : "\x1b[2m";
+    const char *rst = "\x1b[0m";
+    if (prev_count != (size_t)-1 && prev_count != show->len)
+        printf("%s%zu → %zu tracks · %s%s", dim, prev_count, show->len, tot, rst);
+    else
+        printf("%s%zu tracks · %s%s", dim, show->len, tot, rst);
+    if (st->sel.len) {
+        char stot[32];
+        total_duration(st->tb, &st->sel, stot, sizeof stot);
+        printf("   \x1b[1mselected: %zu · %s\x1b[0m", st->sel.len, stot);
+    }
+    if (st->sortspec[0]) printf("   (sort: %s)", st->sortspec);
+    printf("\r\n> %.*s", (int)st->len, st->buf);
+    /* place cursor */
+    if (st->cur < st->len)
+        printf("\x1b[%zuD", st->len - st->cur);
+    fflush(stdout);
+}
+
+static void list_all(rstate *st) {
+    const vec *show = st->parse_ok ? &st->match : &st->last_good;
+    raw_off();
+    printf("\x1b[2J\x1b[H");
+    for (size_t i = 0; i < show->len; i++) {
+        const track *t = table_at(st->tb, *(size_t *)vec_at((vec *)show, i));
+        char dur[16];
+        fmt_duration(t->duration, dur, sizeof dur);
+        const char *a = track_first_tag(t, "ARTIST");
+        const char *ti = track_first_tag(t, "TITLE");
+        printf("%4zu [%c] %-24.24s %-40.40s %8s  %s\n",
+               i + 1, sel_find(st, *(size_t *)vec_at((vec *)show, i)) >= 0 ? 'x' : ' ',
+               a ? a : "?", ti ? ti : "?", dur, t->path);
+    }
+    printf("\n[%zu tracks — press Enter to continue]", show->len);
+    fflush(stdout);
+    getchar();
+    raw_on();
+}
+
+static void show_help(void) {
+    raw_off();
+    printf("\x1b[2J\x1b[H"
+        "Query syntax:\n"
+        "  bare words          substring match on any field (implicit AND)\n"
+        "  field ~ \"regex\"     PCRE2, case-insensitive\n"
+        "  field = value       exact (case-insensitive); != for negation\n"
+        "  year<1990 length>=3:00 rate=96000   numeric comparisons\n"
+        "  & | ! ( )           boolean operators; ',' = '&'\n"
+        "  fields: any tag key + path format length rate year track disc\n"
+        "Commands:\n"
+        "  Enter               play current results (replaces queue)\n"
+        "  :ls                 list all matches\n"
+        "  :p  :n  :b  :stop   pause/resume, next, prev, stop\n"
+        "  Ctrl-P/N/B          same, without clearing the query\n"
+        "  Tab                 cycles query -> list -> queue view -> query\n"
+        "  queue view          shows what's playing: j/k move, Enter jumps\n"
+        "                      playback to that track; opens on every play\n"
+        "  list mode           j/k/arrows move, Space toggles [x],\n"
+        "                      a adds all matches, i inverts, c clears, Enter plays\n"
+        "  :save name          save selection (or matches) as m3u playlist\n"
+        "  :load name          load playlist into selection\n"
+        "  :lists              show saved playlists    :clear  drop selection\n"
+        "  :seek 1:23          seek in current track\n"
+        "  :vol 80             volume percent (0-200)\n"
+        "  :dsp tube 0.4       dsp mode + amount; :dsp off\n"
+        "  :sort f1,-f2        sort results (- = descending)   :sort  clears\n"
+        "  :stats              tag key frequency\n"
+        "  :rescan             (restart with same args instead, for now)\n"
+        "  :q                  quit\n"
+        "\n[press Enter]");
+    fflush(stdout);
+    getchar();
+    raw_on();
+}
+
+static void show_stats(rstate *st) {
+    raw_off();
+    printf("\x1b[2J\x1b[H");
+    /* naive key frequency */
+    vec keys; vec_init(&keys, sizeof(char *));
+    vec counts; vec_init(&counts, sizeof(size_t));
+    for (size_t i = 0; i < table_len(st->tb); i++) {
+        const track *t = table_at(st->tb, i);
+        for (size_t j = 0; j < t->tags.len; j++) {
+            tagkv *kv = vec_at((vec *)&t->tags, j);
+            size_t k;
+            for (k = 0; k < keys.len; k++)
+                if (str_ieq(*(char **)vec_at(&keys, k), kv->key)) break;
+            if (k == keys.len) {
+                char *dup = xstrdup(kv->key);
+                vec_push(&keys, &dup);
+                size_t one = 1;
+                vec_push(&counts, &one);
+            } else {
+                (*(size_t *)vec_at(&counts, k))++;
+            }
+        }
+    }
+    for (size_t k = 0; k < keys.len; k++)
+        printf("%8zu  %s\n", *(size_t *)vec_at(&counts, k), *(char **)vec_at(&keys, k));
+    for (size_t k = 0; k < keys.len; k++) free(*(char **)vec_at(&keys, k));
+    vec_free(&keys); vec_free(&counts);
+    printf("\n[press Enter]");
+    fflush(stdout);
+    getchar();
+    raw_on();
+}
+
+static FILE *dbg;
+static void dbglog(const char *msg) {
+    if (!getenv("TAGPLAY_DEBUG")) return;
+    if (!dbg) dbg = fopen("/tmp/tagplay.log", "w");
+    if (dbg) { fprintf(dbg, "%s\n", msg); fflush(dbg); }
+}
+static void handle_command(rstate *st, const char *cmd, int *quit) {
+    dbglog(cmd);
+    if (!strcmp(cmd, "q") || !strcmp(cmd, "quit")) { *quit = 1; return; }
+    if (!strncmp(cmd, "sort", 4)) {
+        const char *arg = cmd + 4;
+        while (*arg == ' ') arg++;
+        size_t n = strlen(arg);
+        if (n >= sizeof st->sortspec) n = sizeof st->sortspec - 1;
+        memcpy(st->sortspec, arg, n);
+        st->sortspec[n] = 0;
+        return;
+    }
+    if (!strcmp(cmd, "help")) { show_help(); return; }
+    if (!strcmp(cmd, "stats")) { show_stats(st); return; }
+    if (!strcmp(cmd, "ls")) { list_all(st); return; }
+    if (!strcmp(cmd, "p") || !strcmp(cmd, "pause")) { player_toggle_pause(st->pl); return; }
+    if (!strcmp(cmd, "n") || !strcmp(cmd, "next")) { player_next(st->pl); return; }
+    if (!strcmp(cmd, "b") || !strcmp(cmd, "prev")) { player_prev(st->pl); return; }
+    if (!strcmp(cmd, "stop")) { player_stop(st->pl); return; }
+    if (!strncmp(cmd, "seek ", 5)) {
+        double target;
+        long mm, ss2;
+        if (sscanf(cmd + 5, "%ld:%ld", &mm, &ss2) == 2) target = (double)(mm * 60 + ss2);
+        else target = atof(cmd + 5);
+        player_seek(st->pl, target);
+        return;
+    }
+    if (!strncmp(cmd, "vol", 3)) {
+        const char *a = cmd + 3;
+        while (*a == ' ') a++;
+        if (*a) {
+            dsp_set_gain(player_dsp(st->pl), atof(a) / 100.0);
+            st->mute_saved = 0;
+        }
+        snprintf(st->msg, sizeof st->msg, "vol: %d%%",
+                 (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5));
+        return;
+    }
+    if (!strncmp(cmd, "save ", 5)) {
+        const vec *src = st->sel.len ? &st->sel
+                       : (st->parse_ok ? &st->match : &st->last_good);
+        if (!src->len) snprintf(st->msg, sizeof st->msg, "nothing to save");
+        else playlist_save(st, cmd + 5, src);
+        return;
+    }
+    if (!strncmp(cmd, "load ", 5)) { playlist_load(st, cmd + 5); return; }
+    if (!strcmp(cmd, "lists")) { playlist_list(st); return; }
+    if (!strcmp(cmd, "clear")) {
+        st->sel.len = 0;
+        snprintf(st->msg, sizeof st->msg, "selection cleared");
+        return;
+    }
+    if (!strncmp(cmd, "dsp", 3)) {
+        char name[32];
+        double amt = 0.5;
+        if (sscanf(cmd + 3, "%31s %lf", name, &amt) >= 1)
+            dsp_set_mode(player_dsp(st->pl), name, amt);
+        return;
+    }
+}
+
+void repl_run(const table *tb, player *pl) {
+    rstate st;
+    memset(&st, 0, sizeof st);
+    st.tb = tb;
+    st.pl = pl;
+    vec_init(&st.match, sizeof(size_t));
+    vec_init(&st.last_good, sizeof(size_t));
+    vec_init(&st.sel, sizeof(size_t));
+    vec_init(&st.qview, sizeof(size_t));
+    st.parse_ok = 1;
+
+    /* select() on STDIN_FILENO + buffered getchar() would lose bytes:
+     * one read() can pull several keys into the stdio buffer where
+     * select can't see them. Unbuffered stdin makes getchar == read(1). */
+    setvbuf(stdin, NULL, _IONBF, 0);
+    if (raw_on()) {
+        fprintf(stderr, "tagplay: not a terminal; use -q EXPR\n");
+        return;
+    }
+    atexit(raw_off);
+    rerun(&st);
+    redraw(&st, (size_t)-1);
+
+    int quit = 0;
+    while (!quit) {
+        /* wait for a key, or 1 s timeout to refresh the status line */
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(STDIN_FILENO, &rf);
+        struct timeval tv = { 1, 0 };
+        int r = select(STDIN_FILENO + 1, &rf, NULL, NULL, &tv);
+        if (r == 0) {
+            player_status ps;
+            player_get_status(st.pl, &ps);
+            if (ps.playing == 1 || st.focus == 2) redraw(&st, (size_t)-1);
+            continue;
+        }
+        if (r < 0) continue;
+        int c = getchar();
+        if (c == EOF) break;
+        st.msg[0] = 0; /* feedback lives for one keystroke */
+        if (getenv("TAGPLAY_DEBUG")) {
+            char m[32];
+            snprintf(m, sizeof m, "key %d", c);
+            dbglog(m);
+        }
+        size_t prev = (st.parse_ok ? st.match.len : st.last_good.len);
+        const vec *shown = st.parse_ok ? &st.match : &st.last_good;
+        if (c == '\t') { /* Tab: cycle query -> list -> queue -> query */
+            player_status tps;
+            player_get_status(st.pl, &tps);
+            if (st.focus == 0 && shown->len) st.focus = 1;
+            else if (st.focus == 1 && tps.queue_len) {
+                st.focus = 2;
+                st.qcur = tps.queue_pos;
+            } else if (st.focus == 0 && tps.queue_len) {
+                st.focus = 2;
+                st.qcur = tps.queue_pos;
+            } else st.focus = 0;
+            redraw(&st, prev);
+            continue;
+        }
+        if (st.focus == 2) { /* ---- queue view ---- */
+            int handled = 1;
+            if (c == 'j') { if (st.qcur + 1 < st.qview.len) st.qcur++; }
+            else if (c == 'k') { if (st.qcur > 0) st.qcur--; }
+            else if (c == 'g') st.qcur = 0;
+            else if (c == 'G') st.qcur = st.qview.len ? st.qview.len - 1 : 0;
+            else if (c == '+' || c == '=' || c == '-') {
+                double g = dsp_gain(player_dsp(st.pl)) + (c == '-' ? -0.05 : 0.05);
+                dsp_set_gain(player_dsp(st.pl), g);
+                st.mute_saved = 0;
+                snprintf(st.msg, sizeof st.msg, "vol: %d%%",
+                         (int)(dsp_gain(player_dsp(st.pl)) * 100 + 0.5));
+            } else if (c == 'm') {
+                if (st.mute_saved > 0) {
+                    dsp_set_gain(player_dsp(st.pl), st.mute_saved);
+                    st.mute_saved = 0;
+                } else {
+                    st.mute_saved = dsp_gain(player_dsp(st.pl));
+                    if (st.mute_saved <= 0) st.mute_saved = 1.0;
+                    dsp_set_gain(player_dsp(st.pl), 0);
+                }
+            } else if (c == '\r' || c == '\n') {
+                player_jump(st.pl, st.qcur); /* play the cursored track */
+            } else if (c == 27) {
+                int c1 = getchar();
+                if (c1 == '[') {
+                    int c2 = getchar();
+                    if (c2 == 'B') { if (st.qcur + 1 < st.qview.len) st.qcur++; }
+                    else if (c2 == 'A') { if (st.qcur > 0) st.qcur--; }
+                    else if (c2 == '5' || c2 == '6') {
+                        getchar();
+                        int rw = term_rows() - 6;
+                        if (rw < 1) rw = 1;
+                        if (c2 == '6') {
+                            st.qcur += (size_t)rw;
+                            if (st.qcur >= st.qview.len)
+                                st.qcur = st.qview.len ? st.qview.len - 1 : 0;
+                        } else st.qcur = st.qcur > (size_t)rw
+                                       ? st.qcur - (size_t)rw : 0;
+                    }
+                } else st.focus = 0;
+            } else if (c == 16 || c == 14 || c == 2) {
+                handled = 0;          /* transport ctrl keys fall through */
+            } else if (c == ':') {
+                st.len = st.cur = 0;
+                st.buf[0] = 0;
+                rerun(&st);
+                st.focus = 0;
+                handled = 0;
+            } else if (c >= 32 && c < 127) {
+                st.focus = 0;         /* typing returns to search */
+                handled = 0;
+            }
+            if (handled) { redraw(&st, prev); continue; }
+        }
+        if (st.focus == 1) { /* ---- list mode ---- */
+            int handled = 1;
+            if (c == 'j') { if (st.lcur + 1 < shown->len) st.lcur++; }
+            else if (c == 'k') { if (st.lcur > 0) st.lcur--; }
+            else if (c == 'g') st.lcur = 0;
+            else if (c == 'G') st.lcur = shown->len ? shown->len - 1 : 0;
+            else if (c == ' ') {
+                if (shown->len) {
+                    sel_toggle(&st, *(size_t *)vec_at((vec *)shown, st.lcur));
+                    if (st.lcur + 1 < shown->len) st.lcur++; /* advance */
+                }
+            } else if (c == 'a') {
+                for (size_t i = 0; i < shown->len; i++) {
+                    size_t ti = *(size_t *)vec_at((vec *)shown, i);
+                    if (sel_find(&st, ti) < 0) vec_push(&st.sel, &ti);
+                }
+                snprintf(st.msg, sizeof st.msg, "added %zu -> sel:%zu",
+                         shown->len, st.sel.len);
+            } else if (c == '+' || c == '=' || c == '-') {
+                double g = dsp_gain(player_dsp(st.pl)) + (c == '-' ? -0.05 : 0.05);
+                dsp_set_gain(player_dsp(st.pl), g);
+                st.mute_saved = 0;
+                snprintf(st.msg, sizeof st.msg, "vol: %d%%",
+                         (int)(dsp_gain(player_dsp(st.pl)) * 100 + 0.5));
+            } else if (c == 'm') {
+                if (st.mute_saved > 0) {
+                    dsp_set_gain(player_dsp(st.pl), st.mute_saved);
+                    st.mute_saved = 0;
+                    snprintf(st.msg, sizeof st.msg, "unmuted: %d%%",
+                             (int)(dsp_gain(player_dsp(st.pl)) * 100 + 0.5));
+                } else {
+                    st.mute_saved = dsp_gain(player_dsp(st.pl));
+                    if (st.mute_saved <= 0) st.mute_saved = 1.0;
+                    dsp_set_gain(player_dsp(st.pl), 0);
+                    snprintf(st.msg, sizeof st.msg, "muted");
+                }
+            } else if (c == 'i') {
+                for (size_t i = 0; i < shown->len; i++)
+                    sel_toggle(&st, *(size_t *)vec_at((vec *)shown, i));
+                snprintf(st.msg, sizeof st.msg, "selection inverted -> sel:%zu",
+                         st.sel.len);
+            } else if (c == 'c') {
+                st.sel.len = 0;
+                snprintf(st.msg, sizeof st.msg, "selection cleared");
+            } else if (c == 27) {
+                int c1 = getchar();
+                if (c1 == '[') {
+                    int c2 = getchar();
+                    if (c2 == 'B') { if (st.lcur + 1 < shown->len) st.lcur++; }
+                    else if (c2 == 'A') { if (st.lcur > 0) st.lcur--; }
+                    else if (c2 == '5' || c2 == '6') { /* PgUp/PgDn */
+                        getchar();
+                        int rows = term_rows() - 6;
+                        if (rows < 1) rows = 1;
+                        if (c2 == '6') {
+                            st.lcur += (size_t)rows;
+                            if (st.lcur >= shown->len)
+                                st.lcur = shown->len ? shown->len - 1 : 0;
+                        } else {
+                            st.lcur = st.lcur > (size_t)rows
+                                    ? st.lcur - (size_t)rows : 0;
+                        }
+                    }
+                } else st.focus = 0; /* bare Esc back to query */
+            } else if (c == '\r' || c == '\n') {
+                handled = 0;          /* Enter falls through to play */
+            } else if (c == 16 || c == 14 || c == 2) {
+                handled = 0;          /* transport ctrl keys fall through */
+            } else if (c == ':') {
+                /* commands from list mode get a fresh line: the query is
+                 * not being edited here, so clearing it is safe */
+                st.len = st.cur = 0;
+                st.buf[0] = 0;
+                rerun(&st);
+                st.focus = 0;
+                handled = 0;
+            } else if (c >= 32 && c < 127) {
+                st.focus = 0;         /* typing returns to the query */
+                handled = 0;
+            }
+            if (handled) { redraw(&st, prev); continue; }
+        }
+        if (c == '\r' || c == '\n') {
+            st.buf[st.len] = 0;
+            if (st.buf[0] == ':') {
+                handle_command(&st, st.buf + 1, &quit);
+                st.len = st.cur = 0;
+                st.buf[0] = 0;
+                rerun(&st);
+            } else {
+                /* Enter: play the selection if any, else current results;
+                 * clear the line so ':' commands start fresh */
+                const vec *q = st.sel.len ? &st.sel
+                             : (st.parse_ok ? &st.match : &st.last_good);
+                if (q->len) {
+                    player_play(st.pl, (const size_t *)q->data, q->len);
+                    snprintf(st.msg, sizeof st.msg, "playing %zu track%s%s",
+                             q->len, q->len == 1 ? "" : "s",
+                             st.sel.len ? " (selection)" : "");
+                    st.focus = 2;       /* land in the queue view */
+                    st.qcur = 0;
+                }
+                st.len = st.cur = 0;
+                st.buf[0] = 0;
+                rerun(&st);
+            }
+        } else if (c == 127 || c == 8) { /* backspace */
+            if (st.cur > 0) {
+                memmove(st.buf + st.cur - 1, st.buf + st.cur, st.len - st.cur);
+                st.cur--; st.len--;
+                st.buf[st.len] = 0;
+                rerun(&st);
+            }
+        } else if (c == 16) { /* ctrl-p: pause/resume */
+            player_toggle_pause(st.pl);
+        } else if (c == 14) { /* ctrl-n: next */
+            player_next(st.pl);
+        } else if (c == 2) {  /* ctrl-b: prev */
+            player_prev(st.pl);
+        } else if (c == 21) { /* ctrl-u */
+            st.len = st.cur = 0;
+            st.buf[0] = 0;
+            rerun(&st);
+        } else if (c == 23) { /* ctrl-w: delete word */
+            while (st.cur > 0 && st.buf[st.cur - 1] == ' ') { st.cur--; st.len--; }
+            while (st.cur > 0 && st.buf[st.cur - 1] != ' ') {
+                memmove(st.buf + st.cur - 1, st.buf + st.cur, st.len - st.cur);
+                st.cur--; st.len--;
+            }
+            st.buf[st.len] = 0;
+            rerun(&st);
+        } else if (c == 27) { /* escape sequences: arrows/home/end */
+            int c1 = getchar();
+            if (c1 == '[') {
+                int c2 = getchar();
+                if (c2 == 'D' && st.cur > 0) st.cur--;
+                else if (c2 == 'C' && st.cur < st.len) st.cur++;
+                else if (c2 == 'H') st.cur = 0;
+                else if (c2 == 'F') st.cur = st.len;
+                else if (c2 == '3') { /* delete key: [3~ */
+                    getchar();
+                    if (st.cur < st.len) {
+                        memmove(st.buf + st.cur, st.buf + st.cur + 1,
+                                st.len - st.cur - 1);
+                        st.len--;
+                        st.buf[st.len] = 0;
+                        rerun(&st);
+                    }
+                }
+            }
+        } else if (c >= 32 && c < 127 && st.len + 1 < sizeof st.buf) {
+            memmove(st.buf + st.cur + 1, st.buf + st.cur, st.len - st.cur);
+            st.buf[st.cur++] = (char)c;
+            st.len++;
+            st.buf[st.len] = 0;
+            rerun(&st);
+        }
+        if (!quit) redraw(&st, prev);
+    }
+    raw_off();
+    printf("\n");
+    vec_free(&st.match);
+    vec_free(&st.last_good);
+    vec_free(&st.sel);
+    vec_free(&st.qview);
+}

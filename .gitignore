@@ -1,0 +1,4 @@
+tagplay
+src/*.o
+testlib/
+*.tar.gz
