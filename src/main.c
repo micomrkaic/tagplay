@@ -45,7 +45,8 @@ static void usage(void) {
         "  -t          with -q: print artist/title/album/length columns\n"
         "  -C PATH     cache file (default ~/.cache/tagplay/cache.bin)\n"
         "  -n          no cache (scan fresh, don't write)\n"
-        "  -D FILE     debug: decode FILE fully, print stats, exit\n");
+        "  -D FILE     debug: decode FILE fully, print stats, exit\n"
+        "  -T FILE     debug: dump FILE's tags (escaped), duration, exit\n");
     exit(2);
 }
 
@@ -80,6 +81,39 @@ static int debug_decode(const char *path) {
     return 0;
 }
 
+#include "tags.h"
+static int debug_tags(const char *path) {
+    track t;
+    track_init(&t);
+    t.path = xstrdup(path);
+    FILE *f = fopen(path, "rb");
+    uint8_t m[12] = { 0 };
+    if (f) { (void)!fread(m, 1, sizeof m, f); fclose(f); }
+    int rc;
+    if (!memcmp(m, "fLaC", 4)) rc = tags_read_flac(&t);
+    else if (!memcmp(m, "RIFF", 4)) rc = tags_read_wav(&t);
+    else rc = tags_read_mp3(&t);
+    printf("magic: %02x %02x %02x %02x  ('%c%c%c')   parse rc=%d\n",
+           m[0], m[1], m[2], m[3],
+           m[0] >= 32 && m[0] < 127 ? m[0] : '.',
+           m[1] >= 32 && m[1] < 127 ? m[1] : '.',
+           m[2] >= 32 && m[2] < 127 ? m[2] : '.', rc);
+    printf("format=%s rate=%u ch=%u duration=%.3f s\n",
+           fmt_name(t.fmt), t.sample_rate, t.channels, t.duration);
+    for (size_t i = 0; i < t.tags.len; i++) {
+        tagkv *kv = vec_at(&t.tags, i);
+        printf("  %s = ", kv->key);
+        for (const char *p = kv->value; *p; p++) {
+            unsigned char c = (unsigned char)*p;
+            if (c < 32 || c == 127) printf("\\x%02x", c);
+            else putchar(c);
+        }
+        printf("\n");
+    }
+    track_free(&t);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     const char *qexpr = NULL, *sortspec = NULL;
     char cachepath[4096];
@@ -94,6 +128,7 @@ int main(int argc, char **argv) {
             snprintf(cachepath, sizeof cachepath, "%s", argv[++i]);
         else if (!strcmp(argv[i], "-n")) use_cache = 0;
         else if (!strcmp(argv[i], "-D") && i + 1 < argc) return debug_decode(argv[++i]);
+        else if (!strcmp(argv[i], "-T") && i + 1 < argc) return debug_tags(argv[++i]);
         else if (!strcmp(argv[i], "-t")) tabular = 1;
         else usage();
     }

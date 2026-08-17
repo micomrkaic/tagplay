@@ -25,7 +25,7 @@
 #include <errno.h>
 
 #define CACHE_MAGIC   "TGP1"
-#define CACHE_VERSION 1u
+#define CACHE_VERSION 2u /* v2: sanitized tags, better mp3 durations */
 
 static void w32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
 static void w64(FILE *f, uint64_t v) { fwrite(&v, 8, 1, f); }

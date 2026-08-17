@@ -185,7 +185,10 @@ static void parse_id3v2(track *t, uint8_t *buf, size_t len, size_t *audio_off) {
 }
 
 /* ---------- MPEG audio duration ---------- */
+static const int br_v1l1[] = { 0,32,64,96,128,160,192,224,256,288,320,352,384,416,448,0 };
+static const int br_v1l2[] = { 0,32,48,56,64,80,96,112,128,160,192,224,256,320,384,0 };
 static const int br_v1l3[] = { 0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0 };
+static const int br_v2l1[] = { 0,32,48,56,64,80,96,112,128,144,160,176,192,224,256,0 };
 static const int br_v2l3[] = { 0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0 };
 static const int sr_v1[] = { 44100, 48000, 32000, 0 };
 
@@ -196,15 +199,26 @@ static void mp3_duration(track *t, const uint8_t *buf, size_t len, size_t off) {
     if (i + 4 >= len) return;
     const uint8_t *h = buf + i;
     int ver   = (h[1] >> 3) & 3;  /* 3=MPEG1, 2=MPEG2, 0=MPEG2.5 */
-    int layer = (h[1] >> 1) & 3;  /* 1=III */
+    int layer = (h[1] >> 1) & 3;  /* 3=I, 2=II, 1=III */
     int brx   = (h[2] >> 4) & 0xF;
     int srx   = (h[2] >> 2) & 3;
-    if (layer != 1 || srx == 3) return; /* only Layer III */
+    if (layer == 0 || srx == 3) return;
     int sr = sr_v1[srx];
     if (ver == 2) sr /= 2;
     else if (ver == 0) sr /= 4;
-    int br = (ver == 3 ? br_v1l3 : br_v2l3)[brx] * 1000;
-    int spf = (ver == 3) ? 1152 : 576; /* samples per frame, layer III */
+    const int *tbl;
+    int spf;
+    if (layer == 3) {        /* Layer I */
+        tbl = (ver == 3) ? br_v1l1 : br_v2l1;
+        spf = 384;
+    } else if (layer == 2) { /* Layer II (MPEG-2 shares the LII/LIII table) */
+        tbl = (ver == 3) ? br_v1l2 : br_v2l3;
+        spf = 1152;
+    } else {                 /* Layer III */
+        tbl = (ver == 3) ? br_v1l3 : br_v2l3;
+        spf = (ver == 3) ? 1152 : 576;
+    }
+    int br = tbl[brx] * 1000;
     t->sample_rate = (uint32_t)sr;
     t->channels    = (((h[3] >> 6) & 3) == 3) ? 1 : 2;
 
@@ -224,6 +238,7 @@ static void mp3_duration(track *t, const uint8_t *buf, size_t len, size_t off) {
     if (br > 0) t->duration = (double)(len - i) * 8.0 / br; /* CBR estimate */
 }
 
+#include "decoder.h"
 int tags_read_mp3(track *t) {
     size_t len;
     uint8_t *buf = read_file(t->path, &len);
@@ -232,6 +247,18 @@ int tags_read_mp3(track *t) {
     parse_id3v2(t, buf, len, &audio_off);
     mp3_duration(t, buf, len, audio_off);
     free(buf);
+    if (t->duration <= 0 || !t->sample_rate) {
+        /* header math failed (no Xing, odd framing, junk between tag and
+         * audio): let minimp3 measure it properly. Costs a full parse,
+         * but only for the pathological files. */
+        decoder *d = decoder_open(t->path, FMT_MP3);
+        if (d) {
+            t->sample_rate = (uint32_t)decoder_rate(d);
+            t->channels    = (uint32_t)decoder_channels(d);
+            t->duration    = decoder_duration(d);
+            decoder_close(d);
+        }
+    }
     t->fmt = FMT_MP3;
     tags_fallback_from_path(t);
     return 0;

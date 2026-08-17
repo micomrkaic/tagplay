@@ -40,7 +40,18 @@ void track_add_tag(track *t, const char *key, const char *value) {
     tagkv kv;
     kv.key = xstrdup(key);
     for (char *p = kv.key; *p; p++) *p = (char)toupper((unsigned char)*p);
+    /* Sanitize: tags come from arbitrary files and are printed raw into a
+     * terminal. Control bytes (CR, LF, ESC, ...) would corrupt the display
+     * or worse; map them to spaces, then trim. Tabs too. */
     kv.value = xstrdup(value);
+    for (char *p = kv.value; *p; p++)
+        if ((unsigned char)*p < 0x20 || (unsigned char)*p == 0x7F) *p = ' ';
+    size_t n = strlen(kv.value);
+    while (n && kv.value[n - 1] == ' ') kv.value[--n] = 0;
+    char *st = kv.value;
+    while (*st == ' ') st++;
+    if (st != kv.value) memmove(kv.value, st, strlen(st) + 1);
+    if (!kv.value[0]) { free(kv.key); free(kv.value); return; }
     vec_push(&t->tags, &kv);
 }
 size_t track_get_tags(const track *t, const char *key, const char **out, size_t max) {
