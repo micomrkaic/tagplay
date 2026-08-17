@@ -9,39 +9,31 @@
 #   ./publish.sh                 # commit "update" and push
 #   ./publish.sh "message"       # commit with your message and push
 #
-# First run initializes the repo, sets the remote, and pushes main.
-# Assumes the GitHub repo exists and is empty (or contains only files
-# you are happy to merge). Uses SSH by default; export TAGPLAY_HTTPS=1
-# to use the HTTPS remote instead.
+# The remote is set ONCE, on first run, to the HTTPS URL. An existing
+# origin (whatever its URL) is left strictly alone, so a manually
+# configured remote survives upgrades of this script.
 set -e
 cd "$(dirname "$0")"
 
 MSG=${1:-update}
-if [ "${TAGPLAY_HTTPS:-0}" = "1" ]; then
-    REMOTE=https://github.com/micomrkaic/tagplay.git
-else
-    REMOTE=git@github.com:micomrkaic/tagplay.git
-fi
 
 if [ ! -d .git ]; then
     git init -b main
     MSG="tagplay: search-driven music player with audiotard DSP"
 fi
 
-cat > .gitignore <<'EOF'
+cat > .gitignore <<'GITEOF'
 tagplay
 src/*.o
 testlib/
 *.tar.gz
-EOF
+GITEOF
 
 git add -A
 git commit -m "$MSG" || echo "nothing to commit"
 
-if git remote get-url origin >/dev/null 2>&1; then
-    git remote set-url origin "$REMOTE"
-else
-    git remote add origin "$REMOTE"
+if ! git remote get-url origin >/dev/null 2>&1; then
+    git remote add origin https://github.com/micomrkaic/tagplay.git
 fi
 
 git push -u origin main
