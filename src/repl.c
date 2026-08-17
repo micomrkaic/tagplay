@@ -319,11 +319,18 @@ static void redraw_queue(rstate *st) {
 
     int rows = term_rows();
     int cols = term_cols();
-    int avail = rows - 8;
+    int chrome = 6 + (st->msg[0] ? 2 : 0);
+    int avail = rows - chrome;
+    if ((size_t)avail < st->qview.len) avail--;   /* "… more" line */
     if (avail < 3) avail = 3;
 
     printf("\x1b[H");
-    printf("tagplay — QUEUE   Space pause · \xe2\x86\x90/\xe2\x86\x92 seek · r restart · s stop · J/K reorder · Enter jump\x1b[K\r\n\x1b[K\r\n");
+    {
+        char hdr[256];
+        snprintf(hdr, sizeof hdr,
+            "tagplay — QUEUE   Space pause · \xe2\x86\x90/\xe2\x86\x92 seek · r restart · s stop · J/K reorder · Enter jump");
+        printf("%.*s\x1b[K\r\n\x1b[K\r\n", u8clip(hdr, cols - 1), hdr);
+    }
 
     if (st->qcur >= st->qview.len) st->qcur = st->qview.len - 1;
     if (st->qoff > st->qcur) st->qoff = st->qcur;
@@ -350,7 +357,7 @@ static void redraw_queue(rstate *st) {
     }
     if (st->qoff + n < st->qview.len)
         printf("      … %zu more\x1b[K\r\n", st->qview.len - st->qoff - n);
-    if (st->msg[0]) printf("\r\n  %s\x1b[K\r\n", st->msg);
+    if (st->msg[0]) printf("\r\n  %.*s\x1b[K\r\n", u8clip(st->msg, cols - 3), st->msg);
     printf("\x1b[K\r\n");
 
     /* totals: whole queue, and remaining from the playing position */
@@ -401,13 +408,22 @@ static void status_region(rstate *st, const player_status *ps, int cols) {
         snprintf(mt, sizeof mt, "%s — %s", a ? a : "?", ttl ? ttl : "?");
         int mw = cols - 46;
         if (mw < 12) mw = 12;
+        char tailtxt[256];
+        snprintf(tailtxt, sizeof tailtxt,
+                 " %s/%s [%zu/%zu] %dk dsp:%s vol:%d%%%s",
+                 cp, cd, ps->queue_pos + 1, ps->queue_len, ps->rate / 1000,
+                 dsp_mode_name(player_dsp(st->pl)),
+                 (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
+                 ps->null_output ? " (NO AUDIO)" : "");
+        /* budget the line so glyph+marquee+tail can never exceed cols-1
+         * (a wrap here would scroll the terminal and unmoor the layout) */
+        int tw = (int)strlen(tailtxt);
+        int mw2 = cols - 1 - 2 - tw;      /* "▶ " is 2 columns */
+        if (mw2 < 8) mw2 = 8;
+        if (mw2 < mw) mw = mw2;
         printf("%s ", ps->playing == 2 ? "⏸" : "▶");
         marquee(mt, mw);
-        printf(" %s/%s [%zu/%zu] %dk dsp:%s vol:%d%%%s\x1b[K",
-               cp, cd, ps->queue_pos + 1, ps->queue_len, ps->rate / 1000,
-               dsp_mode_name(player_dsp(st->pl)),
-               (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
-               ps->null_output ? " (NO AUDIO)" : "");
+        printf("%.*s\x1b[K", u8clip(tailtxt, cols - 3 - mw), tailtxt);
     } else {
         printf("\x1b[K\r\nstopped\x1b[K");
     }
@@ -416,16 +432,24 @@ static void status_region(rstate *st, const player_status *ps, int cols) {
 static void redraw(rstate *st, size_t prev_count) {
     if (st->focus == 2) { redraw_queue(st); return; }
     const vec *show = st->parse_ok ? &st->match : &st->last_good;
+    player_status pre;
+    player_get_status(st->pl, &pre);
     int rows = term_rows();
     int cols = term_cols();
-    int avail = rows - 8;
+    int chrome = 5 + (st->msg[0] ? 2 : 0) + (pre.playing ? 2 : 0);
+    int avail = rows - chrome;
+    if ((size_t)avail < show->len) avail--;       /* "… more" line */
     if (avail < 3) avail = 3;
 
     printf("\x1b[H"); /* home; lines clear themselves with \\x1b[K */
-    printf("tagplay — %zu tracks   %s\r\n\x1b[K\r\n", table_len(st->tb),
-           st->focus
-             ? "LIST: Space toggle · a all · i invert · c clear · +/- vol · m mute · Enter play"
-             : "Tab: select tracks · Enter: play · :help");
+    {
+        char hdr[256];
+        snprintf(hdr, sizeof hdr, "tagplay — %zu tracks   %s", table_len(st->tb),
+                 st->focus
+                   ? "LIST: Space toggle · a all · i invert · c clear · +/- vol · m mute · Enter play"
+                   : "Tab: select tracks · Enter: play · :help");
+        printf("%.*s\x1b[K\r\n\x1b[K\r\n", u8clip(hdr, cols - 1), hdr);
+    }
     /* clamp cursor and scroll the window around it */
     if (st->lcur >= show->len) st->lcur = show->len ? show->len - 1 : 0;
     if (st->loff > st->lcur) st->loff = st->lcur;
@@ -440,7 +464,7 @@ static void redraw(rstate *st, size_t prev_count) {
     }
     if (st->loff + n < show->len)
         printf("      … %zu more\x1b[K\r\n", show->len - st->loff - n);
-    if (st->msg[0]) printf("\r\n  %s\x1b[K\r\n", st->msg);
+    if (st->msg[0]) printf("\r\n  %.*s\x1b[K\r\n", u8clip(st->msg, cols - 3), st->msg);
     printf("\x1b[K\r\n");
 
     player_status ps;
@@ -660,6 +684,19 @@ void repl_run(const table *tb, player *pl) {
     /* full output buffering: a redraw becomes one write(), so the
      * terminal never renders a half-painted frame */
     setvbuf(stdout, NULL, _IOFBF, 1 << 16);
+    /* the REPL owns the terminal; audio libraries (ALSA under SDL) chat
+     * on stderr and would stamp their warnings across the display.
+     * Redirect stderr to a log for the session instead. */
+    {
+        char logp[4096];
+        const char *xdg = getenv("XDG_CACHE_HOME");
+        if (xdg && *xdg) snprintf(logp, sizeof logp, "%s/tagplay/stderr.log", xdg);
+        else snprintf(logp, sizeof logp, "%s/.cache/tagplay/stderr.log",
+                      getenv("HOME") ? getenv("HOME") : ".");
+        util_mkdirs_for(logp);
+        if (!freopen(logp, "w", stderr))
+            (void)!freopen("/dev/null", "w", stderr);
+    }
     if (raw_on()) {
         fprintf(stderr, "tagplay: not a terminal; use -q EXPR\n");
         return;
