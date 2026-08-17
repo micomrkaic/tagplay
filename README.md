@@ -61,7 +61,11 @@ display uses the whole terminal: the result list grows to the window
 height and titles run the full width. While playing, the status area
 shows an ASCII VU meter (post-DSP peak, dB-scaled, per channel) and a
 90s-CD-player marquee that scrolls long artist/title lines; both update
-at 10 Hz. The count
+at 10 Hz. Refreshes are surgical: the track list repaints only on real
+changes (keys, track advance, queue edits); the periodic tick rewrites
+just the VU and status lines via cursor addressing, and stdout is fully
+buffered so every frame lands as a single write — no flicker or jitter
+on tall terminals. The count
 line shows both populations: `132 tracks · 9h14m   selected: 17 · 1h02m`.
 **Enter
 plays the selection if one exists, else the current result set** (replaces

@@ -47,6 +47,12 @@ typedef struct {
     /* focus: 0 = query line, 1 = result list, 2 = queue view */
     vec    qview;            /* snapshot of player queue (size_t) */
     size_t qcur, qoff;       /* queue view cursor + scroll */
+    /* partial-refresh bookkeeping: where the status region starts and a
+     * signature of everything that affects the layout above it */
+    int    vu_row;           /* 1-based terminal row of the VU line */
+    int    sig_valid;
+    int    sig_focus, sig_playing;
+    size_t sig_rows, sig_qpos, sig_track;
 } rstate;
 
 static struct termios orig_tio;
@@ -117,6 +123,8 @@ static void marquee(const char *s, int width) {
     /* pad with spaces to hold the field width steady */
     printf("%s%*s", field, width - w > 0 ? width - w : 0, "");
 }
+
+static void status_region(rstate *st, const player_status *ps, int cols);
 
 /* (4) ASCII VU meter: two channel bars on one line, dB-scaled */
 static void vu_line(double l, double r, int cols) {
@@ -362,32 +370,47 @@ static void redraw_queue(rstate *st) {
     if (st->sel.len) printf("   \x1b[1mselected: %zu\x1b[0m", st->sel.len);
     printf("\x1b[K\r\n");
 
-    if (ps.playing) {
-        if (ps.playing == 1) {
-            vu_line(ps.vu_l, ps.vu_r, cols);
+    /* rows above the VU line: header+blank(2) + list(n) + overflow +
+     * msg(2) + blank(1) + totals(1) */
+    st->vu_row = 2 + (int)n + (st->qoff + n < st->qview.len ? 1 : 0)
+               + (st->msg[0] ? 2 : 0) + 1 + 1 + 1;
+    status_region(st, &ps, cols);
+    printf("\x1b[0J"); /* clear anything below */
+    st->sig_valid = 1;
+    st->sig_focus = 2;
+    st->sig_playing = ps.playing;
+    st->sig_rows = st->qview.len;
+    st->sig_qpos = ps.queue_pos;
+    st->sig_track = ps.track_index;
+    fflush(stdout);
+}
+
+/* VU line + status line; the last line carries no trailing newline */
+static void status_region(rstate *st, const player_status *ps, int cols) {
+    if (ps->playing) {
+        if (ps->playing == 1) {
+            vu_line(ps->vu_l, ps->vu_r, cols);
             printf("\x1b[K\r\n");
         } else printf("\x1b[K\r\n");
-        const track *ct = table_at(st->tb, ps.track_index);
+        const track *ct = table_at(st->tb, ps->track_index);
         const char *a = track_first_tag(ct, "ARTIST");
         const char *ttl = track_first_tag(ct, "TITLE");
         char cp[16], cd[16], mt[512];
-        fmt_duration(ps.pos, cp, sizeof cp);
-        fmt_duration(ps.dur, cd, sizeof cd);
+        fmt_duration(ps->pos, cp, sizeof cp);
+        fmt_duration(ps->dur, cd, sizeof cd);
         snprintf(mt, sizeof mt, "%s — %s", a ? a : "?", ttl ? ttl : "?");
         int mw = cols - 46;
         if (mw < 12) mw = 12;
-        printf("%s ", ps.playing == 2 ? "⏸" : "▶");
+        printf("%s ", ps->playing == 2 ? "⏸" : "▶");
         marquee(mt, mw);
         printf(" %s/%s [%zu/%zu] %dk dsp:%s vol:%d%%%s\x1b[K",
-               cp, cd, ps.queue_pos + 1, ps.queue_len, ps.rate / 1000,
+               cp, cd, ps->queue_pos + 1, ps->queue_len, ps->rate / 1000,
                dsp_mode_name(player_dsp(st->pl)),
                (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
-               ps.null_output ? " (NO AUDIO)" : "");
+               ps->null_output ? " (NO AUDIO)" : "");
     } else {
         printf("\x1b[K\r\nstopped\x1b[K");
     }
-    printf("\x1b[0J"); /* clear anything below */
-    fflush(stdout);
 }
 
 static void redraw(rstate *st, size_t prev_count) {
@@ -422,27 +445,12 @@ static void redraw(rstate *st, size_t prev_count) {
 
     player_status ps;
     player_get_status(st->pl, &ps);
+    /* rows above VU: header+blank(2) + list(n) + overflow + msg(2) + blank(1) */
+    st->vu_row = 2 + (int)n + (st->loff + n < show->len ? 1 : 0)
+               + (st->msg[0] ? 2 : 0) + 1 + 1;
     if (ps.playing) {
-        if (ps.playing == 1) {
-            vu_line(ps.vu_l, ps.vu_r, cols);
-            printf("\x1b[K\r\n");
-        }
-        const track *ct = table_at(st->tb, ps.track_index);
-        const char *a = track_first_tag(ct, "ARTIST");
-        const char *ti = track_first_tag(ct, "TITLE");
-        char cp[16], cd[16], mt[512];
-        fmt_duration(ps.pos, cp, sizeof cp);
-        fmt_duration(ps.dur, cd, sizeof cd);
-        snprintf(mt, sizeof mt, "%s — %s", a ? a : "?", ti ? ti : "?");
-        int mw = cols - 46;
-        if (mw < 12) mw = 12;
-        printf("%s ", ps.playing == 2 ? "⏸" : "▶");
-        marquee(mt, mw);
-        printf(" %s/%s [%zu/%zu] %dk dsp:%s vol:%d%%%s\x1b[K\r\n",
-               cp, cd, ps.queue_pos + 1, ps.queue_len, ps.rate / 1000,
-               dsp_mode_name(player_dsp(st->pl)),
-               (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
-               ps.null_output ? " (NO AUDIO)" : "");
+        status_region(st, &ps, cols);
+        printf("\x1b[K\r\n");
     }
     char tot[32];
     total_duration(st->tb, show, tot, sizeof tot);
@@ -459,6 +467,12 @@ static void redraw(rstate *st, size_t prev_count) {
     }
     if (st->sortspec[0]) printf("   (sort: %s)", st->sortspec);
     printf("\x1b[K\r\n> %.*s\x1b[K\x1b[0J", (int)st->len, st->buf);
+    st->sig_valid = 1;
+    st->sig_focus = st->focus;
+    st->sig_playing = ps.playing;
+    st->sig_rows = show->len;
+    st->sig_qpos = ps.queue_pos;
+    st->sig_track = ps.track_index;
     /* place cursor */
     if (st->cur < st->len)
         printf("\x1b[%zuD", st->len - st->cur);
@@ -643,6 +657,9 @@ void repl_run(const table *tb, player *pl) {
      * one read() can pull several keys into the stdio buffer where
      * select can't see them. Unbuffered stdin makes getchar == read(1). */
     setvbuf(stdin, NULL, _IONBF, 0);
+    /* full output buffering: a redraw becomes one write(), so the
+     * terminal never renders a half-painted frame */
+    setvbuf(stdout, NULL, _IOFBF, 1 << 16);
     if (raw_on()) {
         fprintf(stderr, "tagplay: not a terminal; use -q EXPR\n");
         return;
@@ -665,7 +682,25 @@ void repl_run(const table *tb, player *pl) {
                           : (struct timeval){ 1, 0 };
         int r = select(STDIN_FILENO + 1, &rf, NULL, NULL, &tv);
         if (r == 0) {
-            if (tick.playing || st.focus == 2) redraw(&st, (size_t)-1);
+            if (!(tick.playing || st.focus == 2)) continue;
+            player_status now;
+            player_get_status(st.pl, &now);
+            int same_layout = st.sig_valid &&
+                st.sig_focus == st.focus &&
+                st.sig_playing == now.playing &&
+                st.sig_qpos == now.queue_pos &&
+                st.sig_track == now.track_index &&
+                (st.focus != 2 || st.sig_rows == now.queue_len);
+            if (same_layout && st.vu_row > 0) {
+                /* surgical: rewrite only the VU + status lines in place,
+                 * leaving the list (and the prompt cursor) untouched */
+                printf("\x1b" "7\x1b[%d;1H", st.vu_row);
+                status_region(&st, &now, term_cols());
+                printf("\x1b" "8");
+                fflush(stdout);
+            } else {
+                redraw(&st, (size_t)-1);
+            }
             continue;
         }
         if (r < 0) continue;
