@@ -153,6 +153,12 @@ Playlists are plain .m3u (EXTM3U + EXTINF + absolute paths) in
 ~/.config/tagplay/playlists/ — readable by any other player, and loading
 matches paths via realpath so relative scans still resolve.
 
+Tag hygiene: "latin1" ID3 and RIFF INFO text is decoded as CP1252 (what
+Windows taggers actually write, so š ž Ž œ € and smart quotes come out
+right), and all tag values are sanitized at ingest — C0 controls, DEL,
+and UTF-8-encoded C1 controls become spaces, so no file's tags can ever
+inject control sequences into the terminal.
+
 ## Audiotard (wired in)
 
 The DSP is audiotard 0.6.6: effects.c / engine.c vendored verbatim

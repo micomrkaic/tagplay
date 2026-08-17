@@ -44,8 +44,17 @@ void track_add_tag(track *t, const char *key, const char *value) {
      * terminal. Control bytes (CR, LF, ESC, ...) would corrupt the display
      * or worse; map them to spaces, then trim. Tabs too. */
     kv.value = xstrdup(value);
-    for (char *p = kv.value; *p; p++)
-        if ((unsigned char)*p < 0x20 || (unsigned char)*p == 0x7F) *p = ' ';
+    for (char *p = kv.value; *p; p++) {
+        unsigned char b = (unsigned char)*p;
+        if (b < 0x20 || b == 0x7F) *p = ' ';
+        else if (b == 0xC2 && ((unsigned char)p[1] >= 0x80 &&
+                               (unsigned char)p[1] <= 0x9F)) {
+            /* C1 control encoded in UTF-8: terminals execute these */
+            p[0] = ' ';
+            p[1] = ' ';
+            p++;
+        }
+    }
     size_t n = strlen(kv.value);
     while (n && kv.value[n - 1] == ' ') kv.value[--n] = 0;
     char *st = kv.value;

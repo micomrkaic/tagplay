@@ -54,6 +54,11 @@ void psort(void *base, size_t n, size_t esz,
 
 void util_mkdirs_for(const char *path); /* mkdir -p dirname(path) */
 
+/* decode CP1252 ("latin1" as every Windows tagger actually writes it)
+ * into UTF-8. Bytes 0x80-0x9F map to the CP1252 punctuation/letters
+ * (including š ž œ € " " ...), NOT to Unicode C1 controls. */
+char *cp1252_to_utf8(const uint8_t *p, size_t n);
+
 void fmt_duration(double secs, char *out, size_t outsz);      /* 3:07 or 1:02:03 */
 void fmt_duration_long(double secs, char *out, size_t outsz); /* 3h12m */
 
