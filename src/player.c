@@ -53,6 +53,9 @@ struct player {
     size_t  cur_index;
     int     null_output;
 
+    /* VU: post-DSP peak per channel, exponentially decayed */
+    double vu[2];
+
     /* output device (SDL). dev is also touched by player_toggle_pause. */
     SDL_AudioDeviceID dev;
     int dev_rate, dev_channels;
@@ -95,7 +98,24 @@ static int out_open(player *p, int rate, int channels) {
     return 0;
 }
 
+static void vu_update(player *p, const float *buf, long frames) {
+    int ch = p->dev_channels > 2 ? 2 : p->dev_channels;
+    double pk[2] = { 0, 0 };
+    for (long f = 0; f < frames; f++)
+        for (int c = 0; c < ch; c++) {
+            double a = buf[f * p->dev_channels + c];
+            if (a < 0) a = -a;
+            if (a > pk[c]) pk[c] = a;
+        }
+    if (ch == 1) pk[1] = pk[0];
+    pthread_mutex_lock(&p->mu);
+    for (int c = 0; c < 2; c++)
+        p->vu[c] = pk[c] > p->vu[c] * 0.6 ? pk[c] : p->vu[c] * 0.6;
+    pthread_mutex_unlock(&p->mu);
+}
+
 static void out_write(player *p, const float *buf, long frames) {
+    vu_update(p, buf, frames);
     if (p->null_output || !p->dev) {
         struct timespec ts;
         long ns = (long)((double)frames / p->dev_rate * 1e9);
@@ -303,6 +323,27 @@ void player_stop(player *p) {
     post(p, CMD_STOP);
     pthread_mutex_unlock(&p->mu);
 }
+void player_move(player *p, size_t from, size_t to) {
+    pthread_mutex_lock(&p->mu);
+    if (from < p->queue.len && to < p->queue.len && from != to) {
+        size_t v = *(size_t *)vec_at(&p->queue, from);
+        if (from < to)
+            memmove((char *)p->queue.data + from * sizeof(size_t),
+                    (char *)p->queue.data + (from + 1) * sizeof(size_t),
+                    (to - from) * sizeof(size_t));
+        else
+            memmove((char *)p->queue.data + (to + 1) * sizeof(size_t),
+                    (char *)p->queue.data + to * sizeof(size_t),
+                    (from - to) * sizeof(size_t));
+        *(size_t *)vec_at(&p->queue, to) = v;
+        /* keep qpos pointing at the same (possibly moved) track */
+        if (p->qpos == from) p->qpos = to;
+        else if (from < p->qpos && to >= p->qpos) p->qpos--;
+        else if (from > p->qpos && to <= p->qpos) p->qpos++;
+    }
+    pthread_mutex_unlock(&p->mu);
+}
+
 void player_jump(player *p, size_t queue_index) {
     pthread_mutex_lock(&p->mu);
     p->jump_to = queue_index;
@@ -336,5 +377,8 @@ void player_get_status(player *p, player_status *st) {
     st->rate = p->rate;
     st->channels = p->channels;
     st->null_output = p->null_output;
+    st->vu_l = p->vu[0];
+    st->vu_r = p->vu[1];
+    if (p->playing != 1) { st->vu_l = st->vu_r = 0; }
     pthread_mutex_unlock(&p->mu);
 }

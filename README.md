@@ -56,7 +56,12 @@ substring searches.
 ## REPL
 
 Type — the count and preview update per keystroke; count shows `N → M` on
-change and dims while the expression is mid-edit (unparseable). The count
+change and dims while the expression is mid-edit (unparseable). The
+display uses the whole terminal: the result list grows to the window
+height and titles run the full width. While playing, the status area
+shows an ASCII VU meter (post-DSP peak, dB-scaled, per channel) and a
+90s-CD-player marquee that scrolls long artist/title lines; both update
+at 10 Hz. The count
 line shows both populations: `132 tracks · 9h14m   selected: 17 · 1h02m`.
 **Enter
 plays the selection if one exists, else the current result set** (replaces
@@ -73,9 +78,14 @@ word, arrows/Home/End/Delete work.
                              the actual play queue with a ▶ marker on the
                              current track, total and remaining duration
                              ("queue: 50 · 3h12m · 1h04m left"). j/k/arrows
-                             move, Enter jumps playback to the cursored
-                             track, +/-/m volume work here too, typing any
-                             character drops you back into search.
+                             move the cursor; Enter jumps playback to the
+                             cursored track; Space pauses/resumes; left and
+                             right arrows seek ∓/+10 s; r restarts the
+                             track; s stops (queue kept); J/K move the
+                             cursored track down/up to reorder the queue,
+                             and :save from here saves the queue in its
+                             current (reordered) order. +/-/m volume work
+                             here too; typing drops you back into search.
 
     List mode (via Tab)      curation over search results: rows show "  3 [x] artist — title";
                              j/k/arrows/PgUp/PgDn/g/G move, Space toggles [x]
