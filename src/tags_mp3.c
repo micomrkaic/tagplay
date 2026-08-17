@@ -63,15 +63,20 @@ static char *id3_text(const uint8_t *p, size_t n, size_t *outlen) {
     uint8_t enc = p[0];
     p++; n--;
     vec out; vec_init(&out, 1);
-    if (enc == 0) { /* latin-1 */
+    if (enc == 0) { /* "latin-1", which in the wild means CP1252 */
+        char *u = cp1252_to_utf8(p, n);
+        /* cp1252_to_utf8 preserves embedded NULs (multi-value seps) but
+         * returns a C buffer; re-walk the input to keep them aligned */
+        size_t w = 0;
         for (size_t i = 0; i < n; i++) {
-            uint8_t c = p[i];
-            if (c < 0x80) { char ch = (char)c; vec_push(&out, &ch); }
-            else {
-                char b0 = (char)(0xC0 | c >> 6), b1 = (char)(0x80 | (c & 0x3F));
-                vec_push(&out, &b0); vec_push(&out, &b1);
-            }
+            if (p[i] == 0) { char z = 0; vec_push(&out, &z); w += 1; continue; }
+            /* decode this single byte alone to keep NUL alignment */
+            char *one = cp1252_to_utf8(p + i, 1);
+            for (char *q = one; *q; q++) vec_push(&out, q);
+            free(one);
         }
+        free(u);
+        (void)w;
     } else if (enc == 1) { /* utf-16 with BOM */
         int be = 1;
         if (n >= 2 && p[0] == 0xFF && p[1] == 0xFE) { be = 0; p += 2; n -= 2; }
