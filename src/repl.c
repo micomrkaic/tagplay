@@ -53,6 +53,7 @@ typedef struct {
     int    sig_valid;
     int    sig_focus, sig_playing;
     size_t sig_rows, sig_qpos, sig_track;
+    int    sig_trows, sig_tcols;   /* terminal size at last full redraw */
 } rstate;
 
 static struct termios orig_tio;
@@ -384,6 +385,8 @@ static void redraw_queue(rstate *st) {
     status_region(st, &ps, cols);
     printf("\x1b[0J"); /* clear anything below */
     st->sig_valid = 1;
+    st->sig_trows = rows;
+    st->sig_tcols = cols;
     st->sig_focus = 2;
     st->sig_playing = ps.playing;
     st->sig_rows = st->qview.len;
@@ -492,6 +495,8 @@ static void redraw(rstate *st, size_t prev_count) {
     if (st->sortspec[0]) printf("   (sort: %s)", st->sortspec);
     printf("\x1b[K\r\n> %.*s\x1b[K\x1b[0J", (int)st->len, st->buf);
     st->sig_valid = 1;
+    st->sig_trows = rows;
+    st->sig_tcols = cols;
     st->sig_focus = st->focus;
     st->sig_playing = ps.playing;
     st->sig_rows = show->len;
@@ -723,6 +728,8 @@ void repl_run(const table *tb, player *pl) {
             player_status now;
             player_get_status(st.pl, &now);
             int same_layout = st.sig_valid &&
+                st.sig_trows == term_rows() &&
+                st.sig_tcols == term_cols() &&
                 st.sig_focus == st.focus &&
                 st.sig_playing == now.playing &&
                 st.sig_qpos == now.queue_pos &&
