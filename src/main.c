@@ -143,6 +143,9 @@ int main(int argc, char **argv) {
     for (; i < argc; i++) parsed += scan_dir(argv[i], &tb, &cached);
     table_free(&cached);
 
+    size_t stations_load(table *tb);
+    stations_load(&tb);
+
     if (table_len(&tb) == 0) {
         fprintf(stderr, "tagplay: no audio files found\n");
         return 1;

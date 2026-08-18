@@ -20,6 +20,7 @@
 #include "repl.h"
 #include "query.h"
 #include "player.h"
+#include "cache.h"
 #include <sys/select.h>
 #include <math.h>
 #include <stdio.h>
@@ -167,6 +168,75 @@ static void sel_toggle(rstate *st, size_t ti) {
 #include <limits.h>
 /* messages and playlist paths are display strings; truncation is fine */
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+static void stations_path(char *out, size_t sz) {
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) snprintf(out, sz, "%s/tagplay/stations", xdg);
+    else {
+        const char *home = getenv("HOME");
+        snprintf(out, sz, "%s/.config/tagplay/stations", home ? home : ".");
+    }
+}
+static void station_add_track(table *tb, const char *name, const char *url) {
+    track *t = table_add(tb);
+    t->path = xstrdup(url);
+    t->fmt = FMT_RADIO;
+    track_add_tag(t, "TITLE", name);
+    track_add_tag(t, "ARTIST", "Radio");
+    track_add_tag(t, "ALBUM", "Internet Radio");
+}
+size_t stations_load(table *tb) {   /* also called from main.c */
+    char p[4096];
+    stations_path(p, sizeof p);
+    FILE *f = fopen(p, "r");
+    if (!f) return 0;
+    char line[2048];
+    size_t n = 0;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0] || line[0] == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        station_add_track(tb, tab + 1, line);   /* url \t name */
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+static int station_persist(const char *url, const char *name, int remove_by_name) {
+    char p[4096];
+    stations_path(p, sizeof p);
+    util_mkdirs_for(p);
+    if (!remove_by_name) {
+        FILE *f = fopen(p, "a");
+        if (!f) return -1;
+        fprintf(f, "%s\t%s\n", url, name);
+        fclose(f);
+        return 0;
+    }
+    /* rewrite without the named station */
+    FILE *f = fopen(p, "r");
+    if (!f) return -1;
+    char tmp[4300];
+    snprintf(tmp, sizeof tmp, "%s.tmp", p);
+    FILE *o = fopen(tmp, "w");
+    if (!o) { fclose(f); return -1; }
+    char line[2048];
+    int removed = 0;
+    while (fgets(line, sizeof line, f)) {
+        char probe[2048];
+        snprintf(probe, sizeof probe, "%s", line);
+        probe[strcspn(probe, "\r\n")] = 0;
+        char *tab = strchr(probe, '\t');
+        if (tab && str_ieq(tab + 1, name)) { removed = 1; continue; }
+        fputs(line, o);
+    }
+    fclose(f);
+    fclose(o);
+    rename(tmp, p);
+    return removed ? 0 : -1;
+}
+
 static void playlist_dir(char *out, size_t sz) {
     const char *xdg = getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) snprintf(out, sz, "%s/tagplay/playlists", xdg);
@@ -408,13 +478,20 @@ static void status_region(rstate *st, const player_status *ps, int cols) {
         char cp[16], cd[16], mt[512];
         fmt_duration(ps->pos, cp, sizeof cp);
         fmt_duration(ps->dur, cd, sizeof cd);
-        snprintf(mt, sizeof mt, "%s — %s", a ? a : "?", ttl ? ttl : "?");
+        if (ps->stream_title[0])
+            snprintf(mt, sizeof mt, "%s \xe2\x80\xa2 %s",
+                     ttl ? ttl : "radio", ps->stream_title);
+        else
+            snprintf(mt, sizeof mt, "%s — %s", a ? a : "?", ttl ? ttl : "?");
         int mw = cols - 46;
         if (mw < 12) mw = 12;
+        char clock[40];
+        if (ps->dur > 0) snprintf(clock, sizeof clock, "%s/%s", cp, cd);
+        else             snprintf(clock, sizeof clock, "%s \xe2\x88\x9e", cp);
         char tailtxt[256];
         snprintf(tailtxt, sizeof tailtxt,
-                 " %s/%s [%zu/%zu] %dk dsp:%s vol:%d%%%s",
-                 cp, cd, ps->queue_pos + 1, ps->queue_len, ps->rate / 1000,
+                 " %s [%zu/%zu] %dk dsp:%s vol:%d%%%s",
+                 clock, ps->queue_pos + 1, ps->queue_len, ps->rate / 1000,
                  dsp_mode_name(player_dsp(st->pl)),
                  (int)(dsp_gain(player_dsp(st->pl)) * 100 + 0.5),
                  ps->null_output ? " (NO AUDIO)" : "");
@@ -660,6 +737,48 @@ static void handle_command(rstate *st, const char *cmd, int *quit) {
     if (!strcmp(cmd, "clear")) {
         st->sel.len = 0;
         snprintf(st->msg, sizeof st->msg, "selection cleared");
+        return;
+    }
+    if (!strncmp(cmd, "radio", 5)) {
+        const char *a = cmd + 5;
+        while (*a == ' ') a++;
+        if (!strncmp(a, "add ", 4)) {
+            const char *u = a + 4;
+            while (*u == ' ') u++;
+            const char *sp = strchr(u, ' ');
+            if (!sp || !strstr(u, "://")) {
+                snprintf(st->msg, sizeof st->msg,
+                         "usage: :radio add <url> <name>");
+                return;
+            }
+            char url[1024];
+            snprintf(url, sizeof url, "%.*s", (int)(sp - u), u);
+            const char *nm = sp + 1;
+            while (*nm == ' ') nm++;
+            if (!*nm) {
+                snprintf(st->msg, sizeof st->msg,
+                         "usage: :radio add <url> <name>");
+                return;
+            }
+            station_add_track((table *)st->tb, nm, url);
+            station_persist(url, nm, 0);
+            rerun(st);
+            snprintf(st->msg, sizeof st->msg, "station added: %s", nm);
+            return;
+        }
+        if (!strncmp(a, "rm ", 3)) {
+            const char *nm = a + 3;
+            while (*nm == ' ') nm++;
+            if (station_persist(NULL, nm, 1) == 0)
+                snprintf(st->msg, sizeof st->msg,
+                         "removed '%s' (gone next start; still listed now)", nm);
+            else
+                snprintf(st->msg, sizeof st->msg, "no station '%s'", nm);
+            return;
+        }
+        snprintf(st->msg, sizeof st->msg,
+                 "usage: :radio add <url> <name> | :radio rm <name>  "
+                 "(find them: format=radio)");
         return;
     }
     if (!strncmp(cmd, "dsp", 3)) {
