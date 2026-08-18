@@ -104,17 +104,25 @@ The selection survives query changes — that's how playlists get built.
 
 **Queue** (opens on play) — transport and order:
 
-    Space  pause/resume        left/right  seek -/+10 s     r  restart track
-    s      stop (queue kept)   Enter       jump to cursored track
+    Space  pause/resume        left/right   seek -/+10 s    r  restart track
+    < >    seek -/+60 s        Shift-arrows seek -/+60 s    s  stop (queue kept)
+    Enter  jump to cursored track           a  album art (full screen)
     J K    move track down/up (reorder live; :save keeps the new order)
-    t      tag inspector
+    t      tag inspector (tags + cover art)
+
+While playing, the status area shows a live progress bar
+(`[=====>----------]`) that slides as you seek — radio streams show
+`[ live stream ]` instead — above the marquee status line.
 
 Anywhere: `Ctrl-P` pause, `Ctrl-N` next, `Ctrl-B` previous.
 
 **The tag inspector** (`t`) shows everything a file carries — identity
 keys first (TITLE, ARTIST, ALBUMARTIST, COMPOSER, PERFORMER, CONDUCTOR,
-ALBUM, DATE, ...), then the rest — the answer to "which field is that
-in?". Rows are classical-aware: a COMPOSER differing from ARTIST renders
+ALBUM, DATE, ...), then the rest, then the embedded cover art rendered
+as colored ASCII (truecolor terminals) — the answer to "which field is
+that in?". `a` in the queue view shows the cover big. Art is read from
+FLAC PICTURE blocks and ID3 APIC frames on demand (front cover
+preferred), decoded with the vendored stb_image; nothing is cached. Rows are classical-aware: a COMPOSER differing from ARTIST renders
 as `Composer — Title (Performer)` in list, queue, and marquee.
 
 ## Commands
@@ -170,6 +178,8 @@ the years; prune with `:radio rm`.
     src/decoder.c    decoder vtable: FLAC / WAV / minimp3 / radio,
                      all emitting interleaved float32
     src/radio.c      curl thread, ring buffer, ICY splitter, StreamTitle
+    src/art.c        FLAC PICTURE / ID3 APIC extraction, stb_image
+                     decode, colored-ASCII render
     src/dsp.c        audiotard streaming producer (blocks, pre-roll,
                      crossfades, RMS match)
     src/effects.c    audiotard 0.6.6, verbatim
@@ -201,4 +211,4 @@ with UTF-8.
 ## License
 
 GPL-3.0-or-later; see COPYING. `effects.c`/`engine.c` are audiotard
-(same author, same license). minimp3 is CC0 and keeps its own notice.
+(same author, same license). minimp3 (CC0) and stb_image (public domain/MIT) keep their own notices.

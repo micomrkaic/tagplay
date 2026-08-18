@@ -21,6 +21,7 @@
 #include "query.h"
 #include "player.h"
 #include "cache.h"
+#include "art.h"
 #include <sys/select.h>
 #include <math.h>
 #include <stdio.h>
@@ -432,7 +433,7 @@ static void redraw_queue(rstate *st) {
 
     int rows = term_rows();
     int cols = term_cols();
-    int chrome = 6 + (st->msg[0] ? 2 : 0);
+    int chrome = 7 + (st->msg[0] ? 2 : 0);
     int avail = rows - chrome;
     if ((size_t)avail < st->qview.len) avail--;   /* "… more" line */
     if (avail < 3) avail = 3;
@@ -441,7 +442,7 @@ static void redraw_queue(rstate *st) {
     {
         char hdr[256];
         snprintf(hdr, sizeof hdr,
-            "tagplay — QUEUE   Space pause · \xe2\x86\x90/\xe2\x86\x92 seek · r restart · s stop · J/K reorder · t tags · Enter jump");
+            "tagplay — QUEUE   Space pause · \xe2\x86\x90\xe2\x86\x92 10s · <> 60s · r restart · s stop · J/K reorder · t tags · a art");
         printf("%.*s\x1b[K\r\n\x1b[K\r\n", u8clip(hdr, cols - 1), hdr);
     }
 
@@ -505,13 +506,33 @@ static void redraw_queue(rstate *st) {
     fflush(stdout);
 }
 
-/* VU line + status line; the last line carries no trailing newline */
+/* VU line + progress line + status line (3 rows always; the last line
+ * carries no trailing newline) */
+static void progress_line(const player_status *ps, int cols) {
+    int bw = cols - 16;
+    if (bw > 72) bw = 72;
+    if (bw < 10) bw = 10;
+    if (ps->dur > 0) {
+        double frac = ps->pos / ps->dur;
+        if (frac < 0) frac = 0;
+        if (frac > 1) frac = 1;
+        int head = (int)(frac * (bw - 1) + 0.5);
+        printf("  [");
+        for (int i = 0; i < bw; i++)
+            putchar(i < head ? '=' : (i == head ? '>' : '-'));
+        printf("]");
+    } else {
+        printf("  [ live stream ]");
+    }
+}
 static void status_region(rstate *st, const player_status *ps, int cols) {
     if (ps->playing) {
         if (ps->playing == 1) {
             vu_line(ps->vu_l, ps->vu_r, cols);
             printf("\x1b[K\r\n");
         } else printf("\x1b[K\r\n");
+        progress_line(ps, cols);
+        printf("\x1b[K\r\n");
         const track *ct = table_at(st->tb, ps->track_index);
         const char *ttl = track_first_tag(ct, "TITLE");
         char cp[16], cd[16], mt[512];
@@ -544,7 +565,7 @@ static void status_region(rstate *st, const player_status *ps, int cols) {
         marquee(mt, mw);
         printf("%.*s\x1b[K", u8clip(tailtxt, cols - 3 - mw), tailtxt);
     } else {
-        printf("\x1b[K\r\nstopped\x1b[K");
+        printf("\x1b[K\r\n\x1b[K\r\nstopped\x1b[K");
     }
 }
 
@@ -555,7 +576,7 @@ static void redraw(rstate *st, size_t prev_count) {
     player_get_status(st->pl, &pre);
     int rows = term_rows();
     int cols = term_cols();
-    int chrome = 5 + (st->msg[0] ? 2 : 0) + (pre.playing ? 2 : 0);
+    int chrome = 5 + (st->msg[0] ? 2 : 0) + (pre.playing ? 3 : 0);
     int avail = rows - chrome;
     if ((size_t)avail < show->len) avail--;       /* "… more" line */
     if (avail < 3) avail = 3;
@@ -717,7 +738,47 @@ static void show_track_detail(rstate *st, size_t ti) {
         if (!rest) { printf("\n"); rest = 1; }
         printf("  %-14s %s\n", kv->key, kv->value);
     }
+    /* embedded cover, if any, below the tags */
+    if (t->fmt == FMT_FLAC || t->fmt == FMT_MP3) {
+        size_t alen = 0;
+        uint8_t *img = art_extract(t->path, t->fmt, &alen);
+        if (img) {
+            printf("\n");
+            int cols = term_cols() - 4;
+            if (cols > 72) cols = 72;
+            if (art_render_ascii(img, alen, cols, 999) != 0)
+                printf("  (embedded art present but undecodable)\n");
+            free(img);
+        } else {
+            printf("\n  (no embedded art)\n");
+        }
+    }
     printf("\n[press Enter]");
+    fflush(stdout);
+    getchar();
+    raw_on();
+}
+
+/* full-screen cover for a track ('a' in the queue view) */
+static void show_art(rstate *st, size_t ti) {
+    const track *t = table_at(st->tb, ti);
+    raw_off();
+    printf("\x1b[2J\x1b[H");
+    char who[512];
+    track_identity(t, who, sizeof who);
+    size_t alen = 0;
+    uint8_t *img = (t->fmt == FMT_FLAC || t->fmt == FMT_MP3)
+                 ? art_extract(t->path, t->fmt, &alen) : NULL;
+    if (img) {
+        int cols = term_cols() - 2;
+        int rows = term_rows() - 4;
+        if (art_render_ascii(img, alen, cols, rows) != 0)
+            printf("embedded art present but undecodable\n");
+        free(img);
+    } else {
+        printf("no embedded art\n");
+    }
+    printf("\n%s   [press Enter]", who);
     fflush(stdout);
     getchar();
     raw_on();
@@ -988,6 +1049,12 @@ void repl_run(const table *tb, player *pl) {
             else if (c == 'G') st.qcur = st.qview.len ? st.qview.len - 1 : 0;
             else if (c == ' ') {           /* Space: pause/resume */
                 player_toggle_pause(st.pl);
+            } else if (c == '>') {         /* fast-forward 60 s */
+                double tp = qps.pos + 60;
+                if (qps.dur > 0 && tp > qps.dur - 0.5) tp = qps.dur - 0.5;
+                player_seek(st.pl, tp);
+            } else if (c == '<') {         /* rewind 60 s */
+                player_seek(st.pl, qps.pos > 60 ? qps.pos - 60 : 0);
             } else if (c == 'r') {         /* restart current track */
                 player_seek(st.pl, 0);
             } else if (c == 's') {         /* stop (queue kept) */
@@ -996,6 +1063,9 @@ void repl_run(const table *tb, player *pl) {
                 if (st.qview.len)
                     show_track_detail(&st,
                         *(size_t *)vec_at(&st.qview, st.qcur));
+            } else if (c == 'a') {
+                if (st.qview.len)
+                    show_art(&st, *(size_t *)vec_at(&st.qview, st.qcur));
             } else if (c == 'J') {         /* move cursored track down */
                 if (st.qcur + 1 < st.qview.len) {
                     player_move(st.pl, st.qcur, st.qcur + 1);
@@ -1036,6 +1106,20 @@ void repl_run(const table *tb, player *pl) {
                         player_seek(st.pl, tp);
                     } else if (c2 == 'D') { /* left: seek -10s */
                         player_seek(st.pl, qps.pos > 10 ? qps.pos - 10 : 0);
+                    } else if (c2 == '1') { /* ESC [ 1 ; 2 C/D: shift-arrows */
+                        int c3 = getchar();
+                        if (c3 == ';') {
+                            int c4 = getchar(), c5 = getchar();
+                            if (c4 == '2' && c5 == 'C') {
+                                double tp = qps.pos + 60;
+                                if (qps.dur > 0 && tp > qps.dur - 0.5)
+                                    tp = qps.dur - 0.5;
+                                player_seek(st.pl, tp);
+                            } else if (c4 == '2' && c5 == 'D') {
+                                player_seek(st.pl,
+                                    qps.pos > 60 ? qps.pos - 60 : 0);
+                            }
+                        }
                     }
                     else if (c2 == '5' || c2 == '6') {
                         getchar();
