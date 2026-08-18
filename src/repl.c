@@ -22,8 +22,17 @@
 #include "player.h"
 #include "cache.h"
 #include "art.h"
+
+#define COL_ALBUM 1u
+#define COL_YEAR  2u
+#define COL_GENRE 4u
+#define COL_FMT   8u
+#define COL_DUR   16u
+#define COL_TRACK 32u
+#define COLS_DEFAULT (COL_ALBUM | COL_FMT | COL_DUR)
 #include <sys/select.h>
 #include <math.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +59,8 @@ typedef struct {
     vec    qview;            /* snapshot of player queue (size_t) */
     size_t qcur, qoff;       /* queue view cursor + scroll */
     unsigned seen_note_seq;
+    char   group[32];        /* tag key to group by; "" = off */
+    unsigned cols_on;        /* COL_* bitmask */
     /* partial-refresh bookkeeping: where the status region starts and a
      * signature of everything that affects the layout above it */
     int    vu_row;           /* 1-based terminal row of the VU line */
@@ -97,6 +108,8 @@ static long now_ms(void) {
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
+
+static long tag_num(const track *t, const char *key);
 
 /* classical-aware identity: if COMPOSER exists and differs from ARTIST,
  * the composer takes the em-dash and the performer goes in parens:
@@ -187,6 +200,63 @@ static void sel_toggle(rstate *st, size_t ti) {
 #include <limits.h>
 /* messages and playlist paths are display strings; truncation is fine */
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+static void config_path(char *out, size_t sz) {
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) snprintf(out, sz, "%s/tagplay/config", xdg);
+    else {
+        const char *home = getenv("HOME");
+        snprintf(out, sz, "%s/.config/tagplay/config", home ? home : ".");
+    }
+}
+static const struct { const char *name; unsigned bit; } COLTAB[] = {
+    { "album", COL_ALBUM }, { "year", COL_YEAR }, { "genre", COL_GENRE },
+    { "fmt", COL_FMT }, { "dur", COL_DUR }, { "track", COL_TRACK },
+};
+static void config_save(rstate *st) {
+    char p[4096];
+    config_path(p, sizeof p);
+    util_mkdirs_for(p);
+    FILE *f = fopen(p, "w");
+    if (!f) return;
+    fprintf(f, "# tagplay display config (rewritten on :cols / :group)\n");
+    fprintf(f, "cols=");
+    int first = 1;
+    for (size_t i = 0; i < sizeof COLTAB / sizeof *COLTAB; i++)
+        if (st->cols_on & COLTAB[i].bit) {
+            fprintf(f, "%s%s", first ? "" : ",", COLTAB[i].name);
+            first = 0;
+        }
+    fprintf(f, "\ngroup=%s\n", st->group);
+    fclose(f);
+}
+static void config_load(rstate *st) {
+    st->cols_on = COLS_DEFAULT;
+    st->group[0] = 0;
+    char p[4096];
+    config_path(p, sizeof p);
+    FILE *f = fopen(p, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!strncmp(line, "cols=", 5)) {
+            st->cols_on = 0;
+            char *tok = strtok(line + 5, ",");
+            while (tok) {
+                for (size_t i = 0; i < sizeof COLTAB / sizeof *COLTAB; i++)
+                    if (str_ieq(tok, COLTAB[i].name))
+                        st->cols_on |= COLTAB[i].bit;
+                tok = strtok(NULL, ",");
+            }
+        } else if (!strncmp(line, "group=", 6)) {
+            snprintf(st->group, sizeof st->group, "%s", line + 6);
+            for (char *q = st->group; *q; q++)
+                *q = (char)toupper((unsigned char)*q);
+        }
+    }
+    fclose(f);
+}
+
 static void stations_path(char *out, size_t sz) {
     const char *xdg = getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) snprintf(out, sz, "%s/tagplay/stations", xdg);
@@ -395,18 +465,111 @@ static void total_duration(const table *tb, const vec *idx, char *out, size_t sz
 
 static void print_track_line(const rstate *st, size_t row, size_t ti, int width) {
     const track *t = table_at(st->tb, ti);
-    const char *album  = track_first_tag(t, "ALBUM");
-    char who[512], dur[16];
+    char who[512], dur[16], line[1024];
     track_identity(t, who, sizeof who);
     fmt_duration(t->duration, dur, sizeof dur);
     int selected = sel_find(st, ti) >= 0;
     int hot = (st->focus == 1 && row == st->lcur);
-    char line[1024];
-    snprintf(line, sizeof line, "%4zu [%c] %s  [%s]  %s·%s",
-             row + 1, selected ? 'x' : ' ', who,
-             album ? album : "?", fmt_name(t->fmt), dur);
+    size_t off = 0;
+    off += (size_t)snprintf(line + off, sizeof line - off, "%4zu [%c] ",
+                            row + 1, selected ? 'x' : ' ');
+    if ((st->cols_on & COL_TRACK) || st->group[0]) {
+        long tn = tag_num(t, "TRACKNUMBER");
+        if (tn > 0)
+            off += (size_t)snprintf(line + off, sizeof line - off,
+                                    "%2ld. ", tn);
+        else
+            off += (size_t)snprintf(line + off, sizeof line - off, "    ");
+    }
+    off += (size_t)snprintf(line + off, sizeof line - off, "%s", who);
+    if ((st->cols_on & COL_ALBUM) && !str_ieq(st->group, "ALBUM")) {
+        const char *album = track_first_tag(t, "ALBUM");
+        off += (size_t)snprintf(line + off, sizeof line - off, "  [%s]",
+                                album ? album : "?");
+    }
+    if (st->cols_on & COL_YEAR) {
+        long y = tag_num(t, "DATE");
+        if (!y) y = tag_num(t, "YEAR");
+        if (y) off += (size_t)snprintf(line + off, sizeof line - off,
+                                       "  (%ld)", y);
+    }
+    if (st->cols_on & COL_GENRE) {
+        const char *g = track_first_tag(t, "GENRE");
+        if (g) off += (size_t)snprintf(line + off, sizeof line - off,
+                                       "  %s", g);
+    }
+    if (st->cols_on & COL_FMT)
+        off += (size_t)snprintf(line + off, sizeof line - off, "  %s",
+                                fmt_name(t->fmt));
+    if (st->cols_on & COL_DUR)
+        off += (size_t)snprintf(line + off, sizeof line - off, "%s%s",
+                                (st->cols_on & COL_FMT) ? "·" : "  ", dur);
     printf("%s%.*s\x1b[0m\x1b[K\r\n", hot ? "\x1b[7m" : "",
            u8clip(line, width), line);
+}
+
+/* group header, e.g. "── Sonatas & Partitas ── (1720)" */
+static void print_group_header(rstate *st, const track *t, int width) {
+    const char *v = track_first_tag(t, st->group);
+    long y = tag_num(t, "DATE");
+    char line[512];
+    snprintf(line, sizeof line, "\xe2\x94\x80\xe2\x94\x80 %s %s%ld%s",
+             v ? v : "(none)", y ? "\xe2\x94\x80\xe2\x94\x80 " : "",
+             y, y ? "" : "");
+    if (!y) line[strlen(line) - 1] = 0; /* drop stray 0 */
+    printf("\x1b[90m%.*s\x1b[0m\x1b[K\r\n", u8clip(line, width), line);
+}
+
+/* does row i start a new group relative to row i-1? */
+static int group_breaks(rstate *st, const vec *show, size_t i) {
+    if (!st->group[0]) return 0;
+    const track *cur = table_at(st->tb, *(size_t *)vec_at((vec *)show, i));
+    if (i == 0) return 1;
+    const track *prv = table_at(st->tb, *(size_t *)vec_at((vec *)show, i - 1));
+    const char *a = track_first_tag(cur, st->group);
+    const char *b = track_first_tag(prv, st->group);
+    return strcasecmp(a ? a : "", b ? b : "") != 0;
+}
+
+/* how many tracks starting at `from` fit in `lines` display lines */
+static size_t tracks_that_fit(rstate *st, const vec *show, size_t from,
+                              int lines) {
+    size_t i = from;
+    int used = 0;
+    while (i < show->len && used < lines) {
+        if (group_breaks(st, show, i)) used++;
+        if (used >= lines) break;
+        used++;
+        i++;
+    }
+    return i - from;
+}
+
+static long tag_num(const track *t, const char *key) {
+    const char *v = track_first_tag(t, key);
+    return v ? atol(v) : 0;
+}
+struct gctx { const table *tb; const char *key; };
+static int group_cmp(const void *a, const void *b, void *ud) {
+    struct gctx *g = ud;
+    const track *ta = table_at(g->tb, *(const size_t *)a);
+    const track *tb_ = table_at(g->tb, *(const size_t *)b);
+    const char *va = track_first_tag(ta, g->key);
+    const char *vb = track_first_tag(tb_, g->key);
+    int c = strcasecmp(va ? va : "", vb ? vb : "");
+    if (c) return c;
+    long d = tag_num(ta, "DISCNUMBER") - tag_num(tb_, "DISCNUMBER");
+    if (d) return d < 0 ? -1 : 1;
+    d = tag_num(ta, "TRACKNUMBER") - tag_num(tb_, "TRACKNUMBER");
+    if (d) return d < 0 ? -1 : 1;
+    const char *na = track_first_tag(ta, "TITLE");
+    const char *nb = track_first_tag(tb_, "TITLE");
+    return strcasecmp(na ? na : "", nb ? nb : "");
+}
+static void apply_group(rstate *st) {
+    if (!st->group[0] || !st->match.len) return;
+    struct gctx g = { st->tb, st->group };
+    psort(st->match.data, st->match.len, sizeof(size_t), group_cmp, &g);
 }
 
 static void rerun(rstate *st) {
@@ -417,6 +580,7 @@ static void rerun(rstate *st) {
     }
     query_run(q, st->tb, &st->match);
     if (st->sortspec[0]) query_sort(st->tb, &st->match, st->sortspec);
+    apply_group(st);
     query_free(q);
     st->parse_ok = 1;
     /* copy into last_good */
@@ -596,10 +760,18 @@ static void redraw(rstate *st, size_t prev_count) {
     if (avail > 0 && st->lcur >= st->loff + (size_t)avail)
         st->loff = st->lcur - (size_t)avail + 1;
     if (st->loff >= show->len) st->loff = 0;
-    size_t n = show->len - st->loff < (size_t)avail
-             ? show->len - st->loff : (size_t)avail;
+    size_t n = tracks_that_fit(st, show, st->loff, avail);
+    /* keep the cursor visible under variable header consumption */
+    while (st->focus == 1 && st->lcur >= st->loff + n && n < show->len) {
+        st->loff++;
+        n = tracks_that_fit(st, show, st->loff, avail);
+    }
     for (size_t i = 0; i < n; i++) {
         size_t row = st->loff + i;
+        if (group_breaks(st, show, row))
+            print_group_header(st,
+                table_at(st->tb, *(size_t *)vec_at((vec *)show, row)),
+                cols - 2);
         print_track_line(st, row, *(size_t *)vec_at((vec *)show, row), cols - 2);
     }
     if (st->loff + n < show->len)
@@ -695,6 +867,10 @@ static void show_help(void) {
         "  :vol 80             volume percent (0-200)\n"
         "  :dsp tube 0.4       dsp mode + amount; :dsp off\n"
         "  :sort f1,-f2        sort results (- = descending)   :sort  clears\n"
+        "  :group album        group matches under dim headers, disc/track order\n"
+        "                      inside; any tag works (:group composer); :group off\n"
+        "  :cols +year -album  toggle row fields (album year genre fmt dur track);\n"
+        "                      settings persist in ~/.config/tagplay/config\n"
         "  :stats              tag key frequency\n"
         "  :rescan             (restart with same args instead, for now)\n"
         "  :q                  quit\n"
@@ -881,6 +1057,62 @@ static void handle_command(rstate *st, const char *cmd, int *quit) {
         snprintf(st->msg, sizeof st->msg, "selection cleared");
         return;
     }
+    if (!strncmp(cmd, "group", 5)) {
+        const char *a = cmd + 5;
+        while (*a == ' ') a++;
+        if (!*a || !strcmp(a, "off")) {
+            st->group[0] = 0;
+            snprintf(st->msg, sizeof st->msg, "grouping off");
+        } else {
+            snprintf(st->group, sizeof st->group, "%s", a);
+            for (char *q = st->group; *q; q++)
+                *q = (char)toupper((unsigned char)*q);
+            st->sortspec[0] = 0;   /* grouping owns the order */
+            snprintf(st->msg, sizeof st->msg,
+                     "grouped by %s (disc/track order inside; :group off to clear)",
+                     st->group);
+        }
+        config_save(st);
+        rerun(st);
+        return;
+    }
+    if (!strncmp(cmd, "cols", 4)) {
+        const char *a = cmd + 4;
+        while (*a == ' ') a++;
+        if (*a) {
+            char buf[256];
+            snprintf(buf, sizeof buf, "%s", a);
+            for (char *tok = strtok(buf, " ,"); tok; tok = strtok(NULL, " ,")) {
+                int on = 1;
+                if (*tok == '-') { on = 0; tok++; }
+                else if (*tok == '+') tok++;
+                if (str_ieq(tok, "reset")) { st->cols_on = COLS_DEFAULT; continue; }
+                int hit = 0;
+                for (size_t i = 0; i < sizeof COLTAB / sizeof *COLTAB; i++)
+                    if (str_ieq(tok, COLTAB[i].name)) {
+                        if (on) st->cols_on |= COLTAB[i].bit;
+                        else    st->cols_on &= ~COLTAB[i].bit;
+                        hit = 1;
+                    }
+                if (!hit) {
+                    snprintf(st->msg, sizeof st->msg,
+                             "unknown column '%s' (album year genre fmt dur track)",
+                             tok);
+                    return;
+                }
+            }
+            config_save(st);
+        }
+        char cur[128] = "";
+        for (size_t i = 0; i < sizeof COLTAB / sizeof *COLTAB; i++)
+            if (st->cols_on & COLTAB[i].bit) {
+                strcat(cur, COLTAB[i].name);
+                strcat(cur, " ");
+            }
+        snprintf(st->msg, sizeof st->msg,
+                 "columns: %s (toggle: :cols +year -album | reset)", cur);
+        return;
+    }
     if (!strncmp(cmd, "radio", 5)) {
         const char *a = cmd + 5;
         while (*a == ' ') a++;
@@ -946,6 +1178,7 @@ void repl_run(const table *tb, player *pl) {
     /* select() on STDIN_FILENO + buffered getchar() would lose bytes:
      * one read() can pull several keys into the stdio buffer where
      * select can't see them. Unbuffered stdin makes getchar == read(1). */
+    config_load(&st);
     setvbuf(stdin, NULL, _IONBF, 0);
     /* full output buffering: a redraw becomes one write(), so the
      * terminal never renders a half-painted frame */
