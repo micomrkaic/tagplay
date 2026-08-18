@@ -165,6 +165,14 @@ inject control sequences into the terminal.
 
 ## Internet radio
 
+A starter set is seeded on first run (only if no stations file exists;
+your edits are never touched afterwards): Radio Swiss Classic & Jazz,
+France Musique, FIP, WQXR, Radio Paradise, SomaFM Groove Salad, plus
+public-service news (NPR, BBC World Service) and the RTV Slovenija
+streams (ARS, Val 202, Prvi). The same list ships as stations.example.
+Stream URLs rot over the years -- a dead one just advances the queue;
+prune with :radio rm.
+
 Stations are first-class tracks. `:radio add <url> <name>` registers a
 station (persisted to ~/.config/tagplay/stations, loaded on start);
 `:radio rm <name>` removes it. Stations carry ARTIST=Radio and
