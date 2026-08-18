@@ -60,6 +60,7 @@ typedef struct {
     size_t qcur, qoff;       /* queue view cursor + scroll */
     unsigned seen_note_seq;
     char   group[32];        /* tag key to group by; "" = off */
+    int    sel_view;         /* :sel mode: match mirrors the selection */
     unsigned cols_on;        /* COL_* bitmask */
     /* partial-refresh bookkeeping: where the status region starts and a
      * signature of everything that affects the layout above it */
@@ -573,6 +574,15 @@ static void apply_group(rstate *st) {
 }
 
 static void rerun(rstate *st) {
+    if (st->sel_view) {
+        /* selection view: the working list mirrors the marks, in
+         * selection (playlist) order; sort/group deliberately skipped */
+        st->match.len = 0;
+        for (size_t i = 0; i < st->sel.len; i++)
+            vec_push(&st->match, vec_at(&st->sel, i));
+        st->parse_ok = 1;
+        return;
+    }
     qnode *q = query_parse(st->buf, 1 /* tolerant */);
     if (!q && st->len > 0) {
         st->parse_ok = 0; /* keep last_good on display */
@@ -879,6 +889,8 @@ static void show_help(void) {
         "  :vol 80             volume percent (0-200)\n"
         "  :dsp tube 0.4       dsp mode + amount; :dsp off\n"
         "  :sort f1,-f2        sort results (- = descending)   :sort  clears\n"
+        "  :sel                show only the marked tracks, in playlist order,\n"
+        "                      for editing (Space unmarks); Enter plays them\n"
         "  :group album        group matches under dim headers, disc/track order\n"
         "                      inside; any tag works (:group composer); :group off\n"
         "  :cols +year -album  toggle row fields (album year genre fmt dur track);\n"
@@ -1067,6 +1079,20 @@ static void handle_command(rstate *st, const char *cmd, int *quit) {
     if (!strcmp(cmd, "clear")) {
         st->sel.len = 0;
         snprintf(st->msg, sizeof st->msg, "selection cleared");
+        return;
+    }
+    if (!strcmp(cmd, "sel")) {
+        if (!st->sel.len) {
+            snprintf(st->msg, sizeof st->msg, "nothing selected");
+            return;
+        }
+        st->sel_view = 1;
+        st->focus = 1;
+        st->lcur = st->loff = 0;
+        snprintf(st->msg, sizeof st->msg,
+                 "%zu selected track%s — Space unmarks, Enter plays; any "
+                 "typing returns to search", st->sel.len,
+                 st->sel.len == 1 ? "" : "s");
         return;
     }
     if (!strncmp(cmd, "group", 5)) {
@@ -1498,11 +1524,12 @@ void repl_run(const table *tb, player *pl) {
                     st.focus = 2;       /* land in the queue view */
                     st.qcur = 0;
                 }
-                st.len = st.cur = 0;
-                st.buf[0] = 0;
-                rerun(&st);
+                /* the query is kept: Tab returns to the same filtered
+                 * list, marks in context ('':'' still opens a fresh
+                 * command line from list/queue views) */
             }
         } else if (c == 127 || c == 8) { /* backspace */
+            st.sel_view = 0;
             if (st.cur > 0) {
                 memmove(st.buf + st.cur - 1, st.buf + st.cur, st.len - st.cur);
                 st.cur--; st.len--;
@@ -1547,6 +1574,7 @@ void repl_run(const table *tb, player *pl) {
                 }
             }
         } else if (c >= 32 && c < 127 && st.len + 1 < sizeof st.buf) {
+            st.sel_view = 0;
             memmove(st.buf + st.cur + 1, st.buf + st.cur, st.len - st.cur);
             st.buf[st.cur++] = (char)c;
             st.len++;

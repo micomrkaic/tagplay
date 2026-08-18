@@ -92,7 +92,8 @@ query with that keystroke.
 
 **Search** — type to filter; the count line shows both populations
 (`132 tracks · 9h14m   selected: 17 · 1h02m`). **Enter plays the
-selection if one exists, else the matches** (and clears the line).
+selection if one exists, else the matches.** The query is kept, so Tab
+brings you back to the same filtered list with your marks in context.
 
 **List** (Tab) — curation over the matches:
 
@@ -101,6 +102,9 @@ selection if one exists, else the matches** (and clears the line).
     t   tag inspector          +/- volume    m   mute (remembers level)
 
 The selection survives query changes — that's how playlists get built.
+The edit loop while listening: Tab out of the queue, refine the marks
+(or `:sel` to see exactly the marked set in play order), Enter to
+replay, `:save name` to keep it.
 
 **Queue** (opens on play) — transport and order:
 
@@ -127,6 +131,10 @@ as `Composer — Title (Performer)` in list, queue, and marquee.
 
 ## Commands
 
+    :sel                       show only the marked tracks, in playlist
+                               order, for editing: Space unmarks, a/i
+                               still work, Enter replays; any typing
+                               returns to normal search
     :sort year,album,-track   sort matches; -field descending; :sort clears
     :group album               group matches under dim headers, sorted by
                                album then disc/track; any tag key works
