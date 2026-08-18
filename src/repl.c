@@ -788,7 +788,13 @@ static void redraw(rstate *st, size_t prev_count) {
     player_status ps;
     player_get_status(st->pl, &ps);
     /* rows above VU: header+blank(2) + list(n) + overflow + msg(2) + blank(1) */
-    st->vu_row = 2 + (int)n + (st->loff + n < show->len ? 1 : 0)
+    /* group headers rendered in the window shift the status region down;
+     * the partial-refresh anchor must count them or ticks paint a ghost
+     * region over the last track rows */
+    int hdrs = 0;
+    for (size_t i = st->loff; i < st->loff + n; i++)
+        if (group_breaks(st, show, i)) hdrs++;
+    st->vu_row = 2 + (int)n + hdrs + (st->loff + n < show->len ? 1 : 0)
                + (st->msg[0] ? 2 : 0) + 1 + 1;
     if (ps.playing) {
         status_region(st, &ps, cols);
