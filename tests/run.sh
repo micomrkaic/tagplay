@@ -5,6 +5,13 @@
 # Minimal regression checks against the fixture library. Usage: tests/run.sh [libdir]
 set -e
 LIB=${1:-testlib}
+# isolate config: empty stations file suppresses first-run seeding, so
+# radio stations don't inflate track counts
+XDG_CONFIG_HOME=$(mktemp -d)
+export XDG_CONFIG_HOME
+mkdir -p "$XDG_CONFIG_HOME/tagplay"
+: > "$XDG_CONFIG_HOME/tagplay/stations"
+trap 'rm -rf "$XDG_CONFIG_HOME"' EXIT
 TP="./tagplay -n"
 fail=0
 chk() { # desc expected_count query...

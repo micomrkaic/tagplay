@@ -57,7 +57,10 @@ substring searches.
 
 Type — the count and preview update per keystroke; count shows `N → M` on
 change and dims while the expression is mid-edit (unparseable). The
-display uses the whole terminal: the result list grows to the window
+display uses the whole terminal. Rows are classical-aware: when a track
+carries a COMPOSER tag different from ARTIST, it renders as
+"Composer — Title (Performer)" in the list, queue, and marquee, so
+Godowsky gets the em-dash and Hamelin the parentheses. The the result list grows to the window
 height and titles run the full width. While playing, the status area
 shows an ASCII VU meter (post-DSP peak, dB-scaled, per channel) and a
 90s-CD-player marquee that scrolls long artist/title lines; both update
@@ -94,7 +97,10 @@ word, arrows/Home/End/Delete work.
     List mode (via Tab)      curation over search results: rows show "  3 [x] artist — title";
                              j/k/arrows/PgUp/PgDn/g/G move, Space toggles [x]
                              (and advances), a adds all matches, i inverts the
-                             selection within the matches, c clears, Enter
+                             selection within the matches, c clears, t opens
+                             the tag inspector on the cursored track (every
+                             key=value the file carries, identity keys first
+                             -- also available in the queue view), Enter
                              plays, ':' starts a command, Esc/Tab back.
                              Selection survives query changes — search, tick,
                              search again, tick more: that's playlist building.
