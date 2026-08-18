@@ -55,6 +55,7 @@ struct player {
 
     /* VU: post-DSP peak per channel, exponentially decayed */
     double vu[2];
+    char   stream_title[256];   /* live ICY StreamTitle, "" if none */
 
     /* output device (SDL). dev is also touched by player_toggle_pause. */
     SDL_AudioDeviceID dev;
@@ -213,6 +214,7 @@ static void *audio_main(void *arg) {
 
         /* open current track if needed */
         if (!dec && p->qpos < p->queue.len) {
+            p->stream_title[0] = 0;
             size_t ti = *(size_t *)vec_at(&p->queue, p->qpos);
             const track *t = table_at(p->tb, ti);
             pthread_mutex_unlock(&p->mu);
@@ -242,10 +244,21 @@ static void *audio_main(void *arg) {
         if (n > 0) {
             dsp_process(p->dsp, buf, n);
             out_write(p, buf, n);
+        } else if (n == DECODER_AGAIN) {
+            /* live stream buffering: keep cadence with silence */
+            long quiet = 1024;
+            memset(buf, 0, sizeof(float) * (size_t)quiet *
+                   (size_t)p->dev_channels);
+            out_write(p, buf, quiet);
         }
+        char lt[256];
+        int have_lt = decoder_stream_title(dec, lt, sizeof lt);
         pthread_mutex_lock(&p->mu);
+        if (have_lt) snprintf(p->stream_title, sizeof p->stream_title, "%s", lt);
         if (n > 0) {
             p->pos = decoder_position(dec);
+        } else if (n == DECODER_AGAIN) {
+            /* stay on this track */
         } else { /* end of track (or error): advance */
             decoder_close(dec);
             dec = NULL;
@@ -379,6 +392,7 @@ void player_get_status(player *p, player_status *st) {
     st->null_output = p->null_output;
     st->vu_l = p->vu[0];
     st->vu_r = p->vu[1];
+    snprintf(st->stream_title, sizeof st->stream_title, "%s", p->stream_title);
     if (p->playing != 1) { st->vu_l = st->vu_r = 0; }
     pthread_mutex_unlock(&p->mu);
 }

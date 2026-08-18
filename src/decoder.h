@@ -25,8 +25,11 @@
 typedef struct decoder decoder;
 
 decoder *decoder_open(const char *path, audio_fmt fmt); /* NULL on failure */
-/* returns frames delivered (0 = end of stream, <0 = error) */
+#define DECODER_AGAIN (-2) /* live stream: no data yet, output silence */
+/* returns frames delivered (0 = end of stream, <0 = error/again) */
 long decoder_read(decoder *d, float *buf, long max_frames);
+/* live stream title (ICY StreamTitle); 1 if present */
+int decoder_stream_title(decoder *d, char *out, size_t sz);
 int  decoder_seek(decoder *d, double seconds);           /* 0 ok */
 void decoder_close(decoder *d);
 

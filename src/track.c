@@ -83,6 +83,7 @@ const char *fmt_name(audio_fmt f) {
     case FMT_FLAC: return "flac";
     case FMT_WAV:  return "wav";
     case FMT_MP3:  return "mp3";
+    case FMT_RADIO: return "radio";
     default:       return "?";
     }
 }

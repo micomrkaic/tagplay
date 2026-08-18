@@ -48,6 +48,7 @@ typedef struct {
     int    rate, channels;
     int    null_output;    /* 1 if no sound device (silent pacing) */
     double vu_l, vu_r;     /* post-DSP peak levels, 0..1 */
+    char   stream_title[256]; /* live radio StreamTitle, "" if none */
 } player_status;
 void player_get_status(player *p, player_status *st);
 

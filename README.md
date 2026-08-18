@@ -163,6 +163,26 @@ right), and all tag values are sanitized at ingest — C0 controls, DEL,
 and UTF-8-encoded C1 controls become spaces, so no file's tags can ever
 inject control sequences into the terminal.
 
+## Internet radio
+
+Stations are first-class tracks. `:radio add <url> <name>` registers a
+station (persisted to ~/.config/tagplay/stations, loaded on start);
+`:radio rm <name>` removes it. Stations carry ARTIST=Radio and
+format=radio, so the query engine finds them like anything else --
+`jazz & format=radio`, tick stations and albums into one playlist.
+
+Transport is libcurl (so HTTPS just works) with the ICY layer parsed in
+radio.c: both proper HTTP Icecast responses and legacy "ICY 200 OK"
+servers, icy-metaint interleaving stripped, and the live StreamTitle
+published to the status line -- the marquee shows what the station is
+actually playing, as broadcast. MP3 streams only for now (still the
+lingua franca); the stream feeds the same decoder vtable, so the DSP
+chain (yes, tape emulation on live radio), VU and volume all apply
+unchanged. The clock shows elapsed time and an infinity sign. Buffer
+underruns emit silence and recover; a dead stream advances the queue
+like a finished track. Build now also needs libcurl (Linux:
+libcurl4-openssl-dev; macOS: curl ships with the system).
+
 ## Audiotard (wired in)
 
 The DSP is audiotard 0.6.6: effects.c / engine.c vendored verbatim

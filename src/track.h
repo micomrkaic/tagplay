@@ -28,7 +28,7 @@ typedef struct {
     char *value;  /* UTF-8 */
 } tagkv;
 
-typedef enum { FMT_FLAC, FMT_WAV, FMT_MP3, FMT_UNKNOWN } audio_fmt;
+typedef enum { FMT_FLAC, FMT_WAV, FMT_MP3, FMT_RADIO, FMT_UNKNOWN } audio_fmt;
 
 typedef struct {
     char     *path;

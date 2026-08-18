@@ -55,9 +55,13 @@ int cache_save(const char *path, const table *tb) {
     if (!f) return -1;
     fwrite(CACHE_MAGIC, 1, 4, f);
     w32(f, CACHE_VERSION);
-    w32(f, (uint32_t)table_len(tb));
+    uint32_t nfile = 0;
+    for (size_t i = 0; i < table_len(tb); i++)
+        if (table_at(tb, i)->fmt != FMT_RADIO) nfile++;
+    w32(f, nfile);
     for (size_t i = 0; i < table_len(tb); i++) {
         const track *t = table_at(tb, i);
+        if (t->fmt == FMT_RADIO) continue;   /* stations live in their own file */
         wstr(f, t->path);
         w64(f, (uint64_t)t->mtime);
         w64(f, (uint64_t)t->fsize);

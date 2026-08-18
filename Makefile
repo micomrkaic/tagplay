@@ -4,8 +4,8 @@
 
 CC      ?= cc
 CFLAGS  += -std=c17 -O2 -Wall -Wextra -Wpedantic -D_GNU_SOURCE
-CFLAGS  += $(shell pkg-config --cflags flac libpcre2-8 sdl2)
-LDLIBS  += $(shell pkg-config --libs flac libpcre2-8 sdl2) -lpthread -lm
+CFLAGS  += $(shell pkg-config --cflags flac libpcre2-8 sdl2 libcurl)
+LDLIBS  += $(shell pkg-config --libs flac libpcre2-8 sdl2 libcurl) -lpthread -lm
 
 SRC := $(wildcard src/*.c)
 OBJ := $(SRC:.c=.o)
