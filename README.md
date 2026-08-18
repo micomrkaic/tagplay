@@ -1,244 +1,204 @@
+![tagplay](docs/banner.png)
+
 # tagplay
 
-Library scanner, tag cache, query engine, live-filtering REPL, playback,
-manual track selection, and saved playlists. Decoder vtable (FLAC / WAV /
-MP3) feeds an audio thread through the DSP insert chain into SDL2
-(CoreAudio on macOS, ALSA/PipeWire on Linux) at each track's native rate.
-Gapless within same-rate runs (device stays open); rate changes drain and
-reopen. MP3 plays gapless via minimp3_ex's LAME delay/padding trim.
+**fzf for your music library, with a tape deck in the signal path.**
 
-Portable: no glibc-isms (qsort_r replaced by a thread-local shim), SDL2
-audio. Builds on Linux now; macOS should need only `brew install flac
-pcre2 sdl2 pkg-config` and `make`.
+tagplay is a terminal music player built around one idea: finding music
+should feel like querying a dataset, not browsing a tree. You type an
+expression; the match count collapses live with every keystroke; Enter
+plays the survivors — through [audiotard](https://github.com/micomrkaic/audiotard)'s
+calibrated tape, vinyl, and tube emulations if you like. Written in C17.
+One process, one binary, three libraries.
 
-Working title `tagplay`; rename at will (one string in `main.c`, the
-Makefile target, and the cache dir).
+## Features
+
+- **Live query search** — a small expression language over your tags,
+  evaluated on every keystroke with a running match count and total
+  duration. Bare words, regex (PCRE2), field comparisons, booleans.
+- **Curation** — checkbox selection across searches (search, tick,
+  search again, tick more), select-all, invert, live selection totals.
+- **Playlists** — plain `.m3u` files any player can read; saved from
+  the selection or the (reordered) queue, loaded back by name.
+- **Playback** — FLAC / WAV / MP3 through a decoder vtable into SDL2
+  (ALSA/PipeWire on Linux, CoreAudio on macOS) at each track's native
+  sample rate; gapless within same-rate runs; MP3 gapless via LAME
+  delay/padding info.
+- **Audiotard inside** — `:dsp tape 0.5` and the wow, flutter, hiss and
+  head-bump you calibrated run live in the playback path, with state
+  rolling through gapless joins. `tube` and `vinyl` likewise.
+- **Internet radio** — stations are first-class searchable tracks; ICY
+  metadata puts the live stream title in the marquee; failure is
+  bounded, never wedging.
+- **A quiet, correct display** — full-terminal rendering with surgical
+  refresh (the list repaints only on real changes), an ASCII VU meter,
+  a 90s-CD-player marquee for long titles, classical-aware rows
+  ("Composer — Title (Performer)"), and a one-key tag inspector.
+- **Tag hygiene** — "latin1" ID3/RIFF text decoded as CP1252 (so š ž œ
+  come out right), every tag sanitized at ingest so no file can inject
+  control sequences into your terminal.
 
 ## Build
 
-    make            # Linux: libflac-dev libpcre2-dev libsdl2-dev
-                    # macOS: brew install flac pcre2 sdl2 pkg-config
+    make            # Linux: libflac-dev libpcre2-dev libsdl2-dev libcurl4-openssl-dev
+                    # macOS: brew install flac pcre2 sdl2 curl pkg-config
     make install    # copies to ~/.local/bin
 
-## Run
+minimp3 and the audiotard DSP are vendored; there is nothing else.
+Builds clean with `-Wall -Wextra -Wpedantic`.
 
-    tagplay ~/music                  # interactive REPL, live match count
-    tagplay -q 'bach violin' ~/music # one-shot: print matching paths
-    tagplay -q 'year<1800' -s year,album,track -t ~/music   # sorted, tabular
-    tagplay -n ...                   # ignore cache, scan fresh
+## Quick start
 
-First run scans everything (FLAC via libFLAC metadata chain; WAV via RIFF
-fmt/LIST-INFO; MP3 via built-in ID3v2.3/2.4 text-frame reader + Xing/CBR
-duration). Results go to ~/.cache/tagplay/cache.bin; later runs re-read
-tags only for files whose mtime or size changed.
+    tagplay ~/music
 
-## Query syntax
+First run scans everything and caches tags (`~/.cache/tagplay/`);
+later runs re-read only changed files. Then:
+
+    bach violin              count collapses as you type
+    Enter                    play the matches (opens the queue view)
+    Tab                      cycle query -> list -> queue -> query
+    :dsp tape 0.4            tape emulation, live
+    :help                    everything else
+
+One-shot scripting mode:
+
+    tagplay -q 'year<1800 & format=flac' -s year,album,track -t ~/music
+
+## The query language
 
     bare words              case-insensitive substring over all tags + path;
-                            juxtaposition is implicit AND: bach violin partita
+                            juxtaposition is AND:  bach violin partita
     field ~ "regex"         PCRE2, case-insensitive, UTF-8
-    field = value           exact, case-insensitive; != negates
+    field = value           exact (case-insensitive); != negates
     year<1990  length>=3:00  rate=96000  track<=3     numeric; mm:ss works
-    & | ! ( )               boolean; ',' is a synonym for '&'
+    & | ! ( )               booleans; ',' is a synonym for '&'
 
-Fields: any tag key (ARTIST, ALBUM, GENRE, COMPOSER, ...) plus pseudo-fields
-`path`, `format` (flac/wav/mp3), `length`, `rate`, `channels`, `year`,
-`track`, `disc`. Multi-valued tags match if ANY value matches; `!=` means
-no value matches. Untagged files get TITLE/ALBUM/ARTIST synthesized from
-their path and `SOURCE=path` so you can find them: `source=path`.
+Fields: any tag key (ARTIST, ALBUM, COMPOSER, GENRE, ...) plus
+pseudo-fields `path`, `format` (flac/wav/mp3/radio), `length`, `rate`,
+`channels`, `year`, `track`, `disc`. Multi-valued tags match if any
+value matches; `!=` means no value matches. Quote regexes containing
+spaces, parens, or `|`. Wrapping a whole expression in quotes is
+forgiven when it contains an operator (`'year < 1970'` parses as the
+comparison); operator-free quoted phrases stay literal substrings.
+Untagged files get TITLE/ALBUM/ARTIST synthesized from their path,
+marked `SOURCE=path`.
 
-Quote regexes containing spaces, parens, or `|`. Wrapping a whole
-expression in quotes is forgiven: `'year < 1970'` parses as the
-comparison (quotes are stripped when the quoted text contains an
-operator); operator-free quoted phrases like `'dark side'` stay literal
-substring searches.
+## Views and keys
 
-## REPL
+tagplay is three views over three collections — **search** (matches),
+**list** (your selection), **queue** (what's playing) — cycled with Tab.
+Esc returns to the query. Typing anything, anywhere, drops you into the
+query with that keystroke.
 
-Type — the count and preview update per keystroke; count shows `N → M` on
-change and dims while the expression is mid-edit (unparseable). The
-display uses the whole terminal. Rows are classical-aware: when a track
-carries a COMPOSER tag different from ARTIST, it renders as
-"Composer — Title (Performer)" in the list, queue, and marquee, so
-Godowsky gets the em-dash and Hamelin the parentheses. The the result list grows to the window
-height and titles run the full width. While playing, the status area
-shows an ASCII VU meter (post-DSP peak, dB-scaled, per channel) and a
-90s-CD-player marquee that scrolls long artist/title lines; both update
-at 10 Hz. Refreshes are surgical: the track list repaints only on real
-changes (keys, track advance, queue edits); the periodic tick rewrites
-just the VU and status lines via cursor addressing, and stdout is fully
-buffered so every frame lands as a single write — no flicker or jitter
-on tall terminals. The count
-line shows both populations: `132 tracks · 9h14m   selected: 17 · 1h02m`.
-**Enter
-plays the selection if one exists, else the current result set** (replaces
-the queue, clears the line). A
-status line shows track, position, queue slot, rate, and dsp mode, and
-refreshes once a second while playing. Ctrl-U clears, Ctrl-W deletes a
-word, arrows/Home/End/Delete work.
+**Search** — type to filter; the count line shows both populations
+(`132 tracks · 9h14m   selected: 17 · 1h02m`). **Enter plays the
+selection if one exists, else the matches** (and clears the line).
 
-    Tab                      cycles query -> list -> queue view (when
-                             something is queued) -> query. Esc returns to
-                             the query from anywhere.
+**List** (Tab) — curation over the matches:
 
-    Queue view               opens automatically when you press play: shows
-                             the actual play queue with a ▶ marker on the
-                             current track, total and remaining duration
-                             ("queue: 50 · 3h12m · 1h04m left"). j/k/arrows
-                             move the cursor; Enter jumps playback to the
-                             cursored track; Space pauses/resumes; left and
-                             right arrows seek ∓/+10 s; r restarts the
-                             track; s stops (queue kept); J/K move the
-                             cursored track down/up to reorder the queue,
-                             and :save from here saves the queue in its
-                             current (reordered) order. +/-/m volume work
-                             here too; typing drops you back into search.
+    j k g G arrows PgUp/PgDn   move          Space   toggle [x] and advance
+    a   add all matches        i   invert    c   clear selection
+    t   tag inspector          +/- volume    m   mute (remembers level)
 
-    List mode (via Tab)      curation over search results: rows show "  3 [x] artist — title";
-                             j/k/arrows/PgUp/PgDn/g/G move, Space toggles [x]
-                             (and advances), a adds all matches, i inverts the
-                             selection within the matches, c clears, t opens
-                             the tag inspector on the cursored track (every
-                             key=value the file carries, identity keys first
-                             -- also available in the queue view), Enter
-                             plays, ':' starts a command, Esc/Tab back.
-                             Selection survives query changes — search, tick,
-                             search again, tick more: that's playlist building.
-    :save name               save selection (or matches if none) as .m3u
-    :load name               load playlist into the selection
-    :lists                   show saved playlists      :clear  drop selection
-    :ls                      list all matches (with [x] markers)
-    :p  :n  :b  :stop        pause/resume, next, prev, stop
-    Ctrl-P / Ctrl-N / Ctrl-B same, without touching the query line
-    :seek 1:23               seek in the current track
-    :vol 80                  volume percent (0-200, software gain); bare :vol
-                             reports. In list mode: + / - nudge by 5%, m mutes
-                             (remembers and restores the previous level).
-                             Current volume shows in the playing status line.
-    :dsp tube 0.4            dsp mode + amount; :dsp off
-    :sort year,album,track   sort spec; -field for descending; :sort clears
-    :stats                   tag-key frequency across the library
-    :help                    syntax reminder
-    :q                       quit
+The selection survives query changes — that's how playlists get built.
 
-If no sound device opens, tagplay runs a "null output" that paces at
-realtime (status shows NO AUDIO DEVICE) — useful for testing over ssh.
-Set TAGPLAY_DEBUG=1 to log keys/commands to /tmp/tagplay.log.
+**Queue** (opens on play) — transport and order:
 
-## Layout
+    Space  pause/resume        left/right  seek -/+10 s     r  restart track
+    s      stop (queue kept)   Enter       jump to cursored track
+    J K    move track down/up (reorder live; :save keeps the new order)
+    t      tag inspector
 
-    src/util.c       vectors, strings, file slurp, duration formatting
-    src/track.c      track model: multi-valued tags, table
-    src/tags_flac.c  libFLAC metadata chain + path-fallback synthesis
-    src/tags_wav.c   RIFF walk: fmt/data/LIST-INFO
-    src/tags_mp3.c   minimal ID3v2.3/2.4 (unsync, UTF-16, TXXX, multi-value)
-                     + MPEG header/Xing duration
-    src/scan.c       recursive walk, magic-byte probe, cache-aware dispatch
-    src/cache.c      versioned binary cache, atomic rename on save
-    src/query.c      lexer → tolerant recursive-descent parser → AST →
-                     PCRE2 evaluator; multi-field sort
-    src/repl.c       raw-mode line editor, per-keystroke re-query, preview,
-                     transport commands, 1 Hz status refresh (select timeout)
-    src/decoder.c    decoder vtable: libFLAC stream decoder, WAV reader
-                     (16/24/32-bit + float), minimp3_ex; all emit
-                     interleaved float32; seek on every format
-    src/dsp.c        insert chain socket for Audiotard: gain + demo "tube"
-                     tanh saturation; state survives track boundaries
-    src/player.c     audio thread (pthread), command mailbox, SDL_QueueAudio
-                     push output with 0.5 s high-watermark throttle, queue
-                     flush on transport commands, per-track native rate,
-                     gapless same-rate, null-output fallback
-    src/main.c       args, cache orchestration, -q one-shot, -D debug decode
+Anywhere: `Ctrl-P` pause, `Ctrl-N` next, `Ctrl-B` previous.
 
-The query engine never touches audio or the terminal: query.c maps
-(string, table) → index list and is unit-testable standalone.
+**The tag inspector** (`t`) shows everything a file carries — identity
+keys first (TITLE, ARTIST, ALBUMARTIST, COMPOSER, PERFORMER, CONDUCTOR,
+ALBUM, DATE, ...), then the rest — the answer to "which field is that
+in?". Rows are classical-aware: a COMPOSER differing from ARTIST renders
+as `Composer — Title (Performer)` in list, queue, and marquee.
 
-## Tests
+## Commands
 
-tests/make_fixtures.sh builds a synthetic library (tagged FLAC at three
-sample rates, a multi-valued-ARTIST FLAC, tagged + untagged WAV, an
-ID3v2 MP3) and tests/run.sh exercises the engine through -q.
+    :sort year,album,-track   sort matches; -field descending; :sort clears
+    :save name    :load name    :lists    :clear      m3u playlists
+    :p :n :b :stop :seek 1:23 :vol 80                 transport
+    :dsp tube|tape|vinyl 0.5   :dsp off               audiotard
+    :radio add <url> <name>    :radio rm <name>       stations
+    :ls   :stats   :help   :q
 
-Playlists are plain .m3u (EXTM3U + EXTINF + absolute paths) in
-~/.config/tagplay/playlists/ — readable by any other player, and loading
-matches paths via realpath so relative scans still resolve.
+## Audiotard
 
-Tag hygiene: "latin1" ID3 and RIFF INFO text is decoded as CP1252 (what
-Windows taggers actually write, so š ž Ž œ € and smart quotes come out
-right), and all tag values are sanitized at ingest — C0 controls, DEL,
-and UTF-8-encoded C1 controls become spaces, so no file's tags can ever
-inject control sequences into the terminal.
+The DSP is audiotard 0.6.6 vendored verbatim, driven by tagplay's C port
+of audiotard's own streaming recipe (pre-roll context renders, seam
+crossfades, FIR-tail padding, phase-continuous wow via t0, one constant
+RMS-match gain at −3 dB headroom). `amount 0.5` is the calibrated
+default; the knob scales modulation depths linearly and noise in dB.
+Causal streaming costs ~100 ms of one-time priming latency, absorbed by
+the SDL queue. Effect state survives same-format track joins — the tape
+rolls through gapless boundaries. Levels are RMS-matched, so
+`:dsp tape 0.3` vs `:dsp off` compares character, not loudness: the A/B
+is fair by construction.
 
 ## Internet radio
 
-A starter set is seeded on first run (only if no stations file exists;
-your edits are never touched afterwards): Radio Swiss Classic & Jazz,
-France Musique, FIP, WQXR, Radio Paradise, SomaFM Groove Salad, plus
-public-service news (NPR, BBC World Service) and the RTV Slovenija
-streams (ARS, Val 202, Prvi). The same list ships as stations.example.
-Stream URLs rot over the years -- a dead one just advances the queue;
-prune with :radio rm.
+A starter set is seeded on first run only (Radio Swiss Classic & Jazz,
+France Musique, FIP, WQXR, Radio Paradise, SomaFM, NPR, BBC WS, RTV
+Slovenija) — see `stations.example`; your edits are never touched.
+Stations carry `format=radio` and mix with files in searches,
+selections, and playlists. Transport is libcurl with the ICY layer
+parsed in `radio.c` (modern Icecast and legacy `ICY 200 OK` both);
+the live StreamTitle scrolls in the marquee. MP3 streams only for now.
+Failure is bounded: an unreachable station or a non-MP3 stream (AAC,
+HLS, error pages) is abandoned within seconds with a `can't play` note,
+and the queue advances — the player never wedges. Stream URLs rot over
+the years; prune with `:radio rm`.
 
-Stations are first-class tracks. `:radio add <url> <name>` registers a
-station (persisted to ~/.config/tagplay/stations, loaded on start);
-`:radio rm <name>` removes it. Stations carry ARTIST=Radio and
-format=radio, so the query engine finds them like anything else --
-`jazz & format=radio`, tick stations and albums into one playlist.
+## Files
 
-Transport is libcurl (so HTTPS just works) with the ICY layer parsed in
-radio.c: both proper HTTP Icecast responses and legacy "ICY 200 OK"
-servers, icy-metaint interleaving stripped, and the live StreamTitle
-published to the status line -- the marquee shows what the station is
-actually playing, as broadcast. MP3 streams only for now (still the
-lingua franca); the stream feeds the same decoder vtable, so the DSP
-chain (yes, tape emulation on live radio), VU and volume all apply
-unchanged. The clock shows elapsed time and an infinity sign. Buffer
-underruns emit silence and recover. Failure is bounded by design: a
-station that is unreachable, or that serves something that never syncs
-as MP3 (AAC, HLS playlists, error pages), is abandoned within seconds --
-never wedging the player -- with a "can't play: <name>" note in the
-message line, and the queue advances. The status line announces the
-station being opened immediately, so slow connects are visible rather
-than mysterious. Build now also needs libcurl (Linux:
-libcurl4-openssl-dev; macOS: curl ships with the system).
+    ~/.cache/tagplay/cache.bin        tag cache (versioned; auto-rebuilds)
+    ~/.cache/tagplay/stderr.log       library chatter, kept off your screen
+    ~/.config/tagplay/playlists/*.m3u saved playlists (portable)
+    ~/.config/tagplay/stations        url <TAB> name per line
 
-## Audiotard (wired in)
+## Source map
 
-The DSP is audiotard 0.6.6: effects.c / engine.c vendored verbatim
-(GPL-3, hence COPYING), driven by tagplay's own port of audiotard's
-streaming producer (the wasm worker / GTK live-mode recipe): 4096-frame
-blocks rendered with 16384 frames of pre-roll context (2048 for
-shaper-only) so filters, delay lines and noise envelopes settle on real
-signal; 512-frame crossfades at seams; a 512-frame pad past the emitted
-region because render tails are FIR-edge-corrupted; wow/flutter LFOs
-phase-continuous across blocks via t0; one constant RMS-match gain
-(x0.708 headroom) measured on the first block. Causal streaming costs
-~100 ms of one-time priming latency (emitted as silence, absorbed by the
-SDL queue). Pipeline state survives same-format track joins, so the
-"tape" rolls through gapless boundaries; it resets only on real rate or
-channel changes.
+    src/query.c      lexer -> tolerant parser -> AST -> PCRE2 evaluator
+    src/scan.c       recursive walk, magic-byte probe, cache-aware
+    src/tags_*.c     libFLAC metadata; RIFF INFO; minimal ID3v2.3/2.4
+                     (CP1252, UTF-16, unsync, TXXX, multi-value)
+    src/cache.c      versioned binary cache, atomic rename
+    src/decoder.c    decoder vtable: FLAC / WAV / minimp3 / radio,
+                     all emitting interleaved float32
+    src/radio.c      curl thread, ring buffer, ICY splitter, StreamTitle
+    src/dsp.c        audiotard streaming producer (blocks, pre-roll,
+                     crossfades, RMS match)
+    src/effects.c    audiotard 0.6.6, verbatim
+    src/engine.c     audiotard 0.6.6, verbatim
+    src/player.c     audio thread, command mailbox, SDL_QueueAudio,
+                     gapless same-rate, VU, bounded failure
+    src/repl.c       raw-mode UI: three views, surgical refresh,
+                     VU meter, marquee, inspector, commands
+    src/main.c       args, cache orchestration, -q/-D/-T modes
 
-    :dsp tube 0.5     biased-tanh waveshaper, 8x oversampled
-    :dsp tape 0.5     wow/flutter/drift, hiss, head bump, HF loss
-    :dsp vinyl 0.5    wow/drift, crackle (Poisson, 3 kHz ring), pink hiss
-    :dsp off
+Debug modes: `-D FILE` decodes a file fully and reports; `-T FILE`
+dumps its tags with odd bytes escaped.
 
-amount 0.5 == audiotard's calibrated defaults; the knob scales the
-modulation depths and noise levels around them (noise in dB, depths
-linearly).
+## Tests
 
-## Roadmap
+    tests/make_fixtures.sh testlib && tests/run.sh testlib
 
-  next  Audiotard wired into dsp.c; per-playlist dsp presets
-  later saved *queries* as smart playlists; richer TUI if the itch comes
+builds a synthetic library (tagged FLAC at three rates, multi-valued
+tags, CP1252 cases, an ID3v2 MP3, untagged WAV) and runs the query
+regression suite. Development also used a pty harness driving the full
+TUI and a local ICY server — good/junk/dead stations included.
+
+## Portability
+
+Linux now; macOS should need only the brew line above (SDL2 audio, no
+glibc-isms — `qsort_r` is shimmed). Terminal: anything ANSI/VT100-ish
+with UTF-8.
 
 ## License
 
-GPL-3.0-or-later; see COPYING. effects.c/engine.c are audiotard 0.6.6
-(same author, same license). minimp3 (third_party header, vendored as
-src/minimp3*.h) is CC0/public domain and keeps its own notice.
-
-## Publishing
-
-./publish.sh ["commit message"] pushes to github.com/micomrkaic/tagplay
-(SSH remote by default; TAGPLAY_HTTPS=1 for HTTPS).
+GPL-3.0-or-later; see COPYING. `effects.c`/`engine.c` are audiotard
+(same author, same license). minimp3 is CC0 and keeps its own notice.
