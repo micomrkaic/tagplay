@@ -742,8 +742,14 @@ static void redraw(rstate *st, size_t prev_count) {
     int cols = term_cols();
     int chrome = 5 + (st->msg[0] ? 2 : 0) + (pre.playing ? 3 : 0);
     int avail = rows - chrome;
-    if ((size_t)avail < show->len) avail--;       /* "… more" line */
-    if (avail < 3) avail = 3;
+    if (avail < 4) avail = 4;
+    /* overflow accounting in LINES: group headers consume lines, so
+     * tracks can overflow even when avail >= track count. Compute the
+     * fit; if tracks remain, re-budget one line for the "more" row. */
+    {
+        size_t fit0 = tracks_that_fit(st, show, st->loff, avail);
+        if (st->loff + fit0 < show->len) avail--;
+    }
 
     printf("\x1b[H"); /* home; lines clear themselves with \\x1b[K */
     {
