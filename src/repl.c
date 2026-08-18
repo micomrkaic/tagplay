@@ -48,6 +48,7 @@ typedef struct {
     /* focus: 0 = query line, 1 = result list, 2 = queue view */
     vec    qview;            /* snapshot of player queue (size_t) */
     size_t qcur, qoff;       /* queue view cursor + scroll */
+    unsigned seen_note_seq;
     /* partial-refresh bookkeeping: where the status region starts and a
      * signature of everything that affects the layout above it */
     int    vu_row;           /* 1-based terminal row of the VU line */
@@ -926,6 +927,12 @@ void repl_run(const table *tb, player *pl) {
             if (!(tick.playing || st.focus == 2)) continue;
             player_status now;
             player_get_status(st.pl, &now);
+            if (now.note_seq != st.seen_note_seq && now.note[0]) {
+                st.seen_note_seq = now.note_seq;
+                snprintf(st.msg, sizeof st.msg, "%s", now.note);
+                redraw(&st, (size_t)-1);
+                continue;
+            }
             int same_layout = st.sig_valid &&
                 st.sig_trows == term_rows() &&
                 st.sig_tcols == term_cols() &&

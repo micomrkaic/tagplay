@@ -49,6 +49,8 @@ typedef struct {
     int    null_output;    /* 1 if no sound device (silent pacing) */
     double vu_l, vu_r;     /* post-DSP peak levels, 0..1 */
     char   stream_title[256]; /* live radio StreamTitle, "" if none */
+    char   note[160];         /* one-shot note (unplayable track etc.) */
+    unsigned note_seq;
 } player_status;
 void player_get_status(player *p, player_status *st);
 

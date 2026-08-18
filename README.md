@@ -193,8 +193,13 @@ actually playing, as broadcast. MP3 streams only for now (still the
 lingua franca); the stream feeds the same decoder vtable, so the DSP
 chain (yes, tape emulation on live radio), VU and volume all apply
 unchanged. The clock shows elapsed time and an infinity sign. Buffer
-underruns emit silence and recover; a dead stream advances the queue
-like a finished track. Build now also needs libcurl (Linux:
+underruns emit silence and recover. Failure is bounded by design: a
+station that is unreachable, or that serves something that never syncs
+as MP3 (AAC, HLS playlists, error pages), is abandoned within seconds --
+never wedging the player -- with a "can't play: <name>" note in the
+message line, and the queue advances. The status line announces the
+station being opened immediately, so slow connects are visible rather
+than mysterious. Build now also needs libcurl (Linux:
 libcurl4-openssl-dev; macOS: curl ships with the system).
 
 ## Audiotard (wired in)

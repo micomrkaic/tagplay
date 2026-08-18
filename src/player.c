@@ -56,6 +56,8 @@ struct player {
     /* VU: post-DSP peak per channel, exponentially decayed */
     double vu[2];
     char   stream_title[256];   /* live ICY StreamTitle, "" if none */
+    char   note[160];           /* one-shot UI note (e.g. unplayable station) */
+    unsigned note_seq;
 
     /* output device (SDL). dev is also touched by player_toggle_pause. */
     SDL_AudioDeviceID dev;
@@ -217,10 +219,22 @@ static void *audio_main(void *arg) {
             p->stream_title[0] = 0;
             size_t ti = *(size_t *)vec_at(&p->queue, p->qpos);
             const track *t = table_at(p->tb, ti);
+            /* show the track being opened immediately (radio opens can
+             * take seconds); zero the meters meanwhile */
+            p->cur_index = ti;
+            p->pos = 0;
+            p->dur = 0;
+            p->vu[0] = p->vu[1] = 0;
             pthread_mutex_unlock(&p->mu);
             decoder *nd = decoder_open(t->path, t->fmt);
             pthread_mutex_lock(&p->mu);
-            if (!nd) { /* unreadable: skip */
+            if (!nd) { /* unreadable/unplayable: note it and skip */
+                const char *ttl = track_first_tag(t, "TITLE");
+                snprintf(p->note, sizeof p->note,
+                         "can't play: %s%s", ttl ? ttl : t->path,
+                         t->fmt == FMT_RADIO ?
+                         "  (unreachable or not an MP3 stream)" : "");
+                p->note_seq++;
                 if (p->qpos + 1 < p->queue.len) p->qpos++;
                 else p->playing = 0;
                 continue;
@@ -393,6 +407,8 @@ void player_get_status(player *p, player_status *st) {
     st->vu_l = p->vu[0];
     st->vu_r = p->vu[1];
     snprintf(st->stream_title, sizeof st->stream_title, "%s", p->stream_title);
+    snprintf(st->note, sizeof st->note, "%s", p->note);
+    st->note_seq = p->note_seq;
     if (p->playing != 1) { st->vu_l = st->vu_r = 0; }
     pthread_mutex_unlock(&p->mu);
 }
