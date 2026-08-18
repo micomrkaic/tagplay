@@ -128,6 +128,13 @@ as `Composer — Title (Performer)` in list, queue, and marquee.
 ## Commands
 
     :sort year,album,-track   sort matches; -field descending; :sort clears
+    :group album               group matches under dim headers, sorted by
+                               album then disc/track; any tag key works
+                               (:group composer, :group genre, :group year);
+                               track numbers appear on rows; :group off
+    :cols +year -album         toggle row fields on/off: album year genre
+                               fmt dur track; :cols shows current; :cols
+                               reset restores defaults
     :save name    :load name    :lists    :clear      m3u playlists
     :p :n :b :stop :seek 1:23 :vol 80                 transport
     :dsp tube|tape|vinyl 0.5   :dsp off               audiotard
