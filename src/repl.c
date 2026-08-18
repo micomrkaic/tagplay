@@ -95,6 +95,23 @@ static long now_ms(void) {
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
+
+/* classical-aware identity: if COMPOSER exists and differs from ARTIST,
+ * the composer takes the em-dash and the performer goes in parens:
+ *   "J.S. Bach — Chaconne (Hamelin)" instead of "Hamelin — Chaconne" */
+static void track_identity(const track *t, char *out, size_t sz) {
+    const char *artist   = track_first_tag(t, "ARTIST");
+    const char *title    = track_first_tag(t, "TITLE");
+    const char *composer = track_first_tag(t, "COMPOSER");
+    if (composer && artist && !str_ieq(composer, artist) &&
+        !str_icasestr(artist, composer))
+        snprintf(out, sz, "%s — %s (%s)", composer,
+                 title ? title : "?", artist);
+    else
+        snprintf(out, sz, "%s — %s", artist ? artist : "?",
+                 title ? title : "?");
+}
+
 /* (5) 90s CD-player marquee: writes `s` into a width-limited field,
  * scrolling horizontally when it doesn't fit */
 static void marquee(const char *s, int width) {
@@ -376,17 +393,15 @@ static void total_duration(const table *tb, const vec *idx, char *out, size_t sz
 
 static void print_track_line(const rstate *st, size_t row, size_t ti, int width) {
     const track *t = table_at(st->tb, ti);
-    const char *artist = track_first_tag(t, "ARTIST");
-    const char *title  = track_first_tag(t, "TITLE");
     const char *album  = track_first_tag(t, "ALBUM");
-    char dur[16];
+    char who[512], dur[16];
+    track_identity(t, who, sizeof who);
     fmt_duration(t->duration, dur, sizeof dur);
     int selected = sel_find(st, ti) >= 0;
     int hot = (st->focus == 1 && row == st->lcur);
     char line[1024];
-    snprintf(line, sizeof line, "%4zu [%c] %s — %s  [%s]  %s·%s",
-             row + 1, selected ? 'x' : ' ',
-             artist ? artist : "?", title ? title : "?",
+    snprintf(line, sizeof line, "%4zu [%c] %s  [%s]  %s·%s",
+             row + 1, selected ? 'x' : ' ', who,
              album ? album : "?", fmt_name(t->fmt), dur);
     printf("%s%.*s\x1b[0m\x1b[K\r\n", hot ? "\x1b[7m" : "",
            u8clip(line, width), line);
@@ -425,7 +440,7 @@ static void redraw_queue(rstate *st) {
     {
         char hdr[256];
         snprintf(hdr, sizeof hdr,
-            "tagplay — QUEUE   Space pause · \xe2\x86\x90/\xe2\x86\x92 seek · r restart · s stop · J/K reorder · Enter jump");
+            "tagplay — QUEUE   Space pause · \xe2\x86\x90/\xe2\x86\x92 seek · r restart · s stop · J/K reorder · t tags · Enter jump");
         printf("%.*s\x1b[K\r\n\x1b[K\r\n", u8clip(hdr, cols - 1), hdr);
     }
 
@@ -439,16 +454,14 @@ static void redraw_queue(rstate *st) {
         size_t row = st->qoff + i;
         size_t ti = *(size_t *)vec_at(&st->qview, row);
         const track *t = table_at(st->tb, ti);
-        const char *a = track_first_tag(t, "ARTIST");
-        const char *ttl = track_first_tag(t, "TITLE");
-        char dur[16];
+        char who[512], dur[16];
+        track_identity(t, who, sizeof who);
         fmt_duration(t->duration, dur, sizeof dur);
         int now = (ps.playing && row == ps.queue_pos);
         int hot = (row == st->qcur);
         char line[1024];
-        snprintf(line, sizeof line, "%s%4zu  %s — %s  %s",
-                 now ? "▶ " : "  ", row + 1,
-                 a ? a : "?", ttl ? ttl : "?", dur);
+        snprintf(line, sizeof line, "%s%4zu  %s  %s",
+                 now ? "▶ " : "  ", row + 1, who, dur);
         printf("%s%.*s\x1b[0m\x1b[K\r\n", hot ? "\x1b[7m" : "",
                u8clip(line, cols - 2), line);
     }
@@ -499,7 +512,6 @@ static void status_region(rstate *st, const player_status *ps, int cols) {
             printf("\x1b[K\r\n");
         } else printf("\x1b[K\r\n");
         const track *ct = table_at(st->tb, ps->track_index);
-        const char *a = track_first_tag(ct, "ARTIST");
         const char *ttl = track_first_tag(ct, "TITLE");
         char cp[16], cd[16], mt[512];
         fmt_duration(ps->pos, cp, sizeof cp);
@@ -508,7 +520,7 @@ static void status_region(rstate *st, const player_status *ps, int cols) {
             snprintf(mt, sizeof mt, "%s \xe2\x80\xa2 %s",
                      ttl ? ttl : "radio", ps->stream_title);
         else
-            snprintf(mt, sizeof mt, "%s — %s", a ? a : "?", ttl ? ttl : "?");
+            track_identity(ct, mt, sizeof mt);
         int mw = cols - 46;
         if (mw < 12) mw = 12;
         char clock[40];
@@ -552,7 +564,7 @@ static void redraw(rstate *st, size_t prev_count) {
         char hdr[256];
         snprintf(hdr, sizeof hdr, "tagplay — %zu tracks   %s", table_len(st->tb),
                  st->focus
-                   ? "LIST: Space toggle · a all · i invert · c clear · +/- vol · m mute · Enter play"
+                   ? "LIST: Space toggle · a all · i invert · t tags · c clear · +/- vol · Enter play"
                    : "Tab: select tracks · Enter: play · :help");
         printf("%.*s\x1b[K\r\n\x1b[K\r\n", u8clip(hdr, cols - 1), hdr);
     }
@@ -651,7 +663,9 @@ static void show_help(void) {
         "                      Space pause, left/right seek 10s, r restart,\n"
         "                      s stop, J/K reorder the queue, :save keeps it\n"
         "  list mode           j/k/arrows move, Space toggles [x],\n"
-        "                      a adds all matches, i inverts, c clears, Enter plays\n"
+        "                      a adds all matches, i inverts, c clears, Enter plays;\n"
+        "                      t shows every tag on the cursored track (also in\n"
+        "                      queue view) — the answer to 'which field is that in?'\n"
         "  :save name          save selection (or matches) as m3u playlist\n"
         "  :load name          load playlist into selection\n"
         "  :lists              show saved playlists    :clear  drop selection\n"
@@ -663,6 +677,46 @@ static void show_help(void) {
         "  :rescan             (restart with same args instead, for now)\n"
         "  :q                  quit\n"
         "\n[press Enter]");
+    fflush(stdout);
+    getchar();
+    raw_on();
+}
+
+static void show_track_detail(rstate *st, size_t ti) {
+    const track *t = table_at(st->tb, ti);
+    raw_off();
+    printf("\x1b[2J\x1b[H");
+    char dur[16];
+    fmt_duration(t->duration, dur, sizeof dur);
+    printf("%s\n", t->path);
+    if (t->fmt == FMT_RADIO)
+        printf("%s stream\n\n", fmt_name(t->fmt));
+    else
+        printf("%s · %u Hz · %u ch · %s\n\n",
+               fmt_name(t->fmt), t->sample_rate, t->channels, dur);
+    /* identity keys first, in a fixed meaningful order */
+    static const char *first[] = {
+        "TITLE", "ARTIST", "ALBUMARTIST", "COMPOSER", "PERFORMER",
+        "CONDUCTOR", "ORCHESTRA", "ENSEMBLE", "ALBUM", "DATE",
+        "TRACKNUMBER", "DISCNUMBER", "GENRE", NULL
+    };
+    int shown[512] = { 0 };
+    for (int k = 0; first[k]; k++)
+        for (size_t i = 0; i < t->tags.len; i++) {
+            tagkv *kv = vec_at((vec *)&t->tags, i);
+            if (str_ieq(kv->key, first[k])) {
+                printf("  %-14s %s\n", kv->key, kv->value);
+                if (i < 512) shown[i] = 1;
+            }
+        }
+    int rest = 0;
+    for (size_t i = 0; i < t->tags.len; i++) {
+        if (i < 512 && shown[i]) continue;
+        tagkv *kv = vec_at((vec *)&t->tags, i);
+        if (!rest) { printf("\n"); rest = 1; }
+        printf("  %-14s %s\n", kv->key, kv->value);
+    }
+    printf("\n[press Enter]");
     fflush(stdout);
     getchar();
     raw_on();
@@ -931,6 +985,10 @@ void repl_run(const table *tb, player *pl) {
                 player_seek(st.pl, 0);
             } else if (c == 's') {         /* stop (queue kept) */
                 player_stop(st.pl);
+            } else if (c == 't') {
+                if (st.qview.len)
+                    show_track_detail(&st,
+                        *(size_t *)vec_at(&st.qview, st.qcur));
             } else if (c == 'J') {         /* move cursored track down */
                 if (st.qcur + 1 < st.qview.len) {
                     player_move(st.pl, st.qcur, st.qcur + 1);
@@ -1034,6 +1092,10 @@ void repl_run(const table *tb, player *pl) {
                     dsp_set_gain(player_dsp(st.pl), 0);
                     snprintf(st.msg, sizeof st.msg, "muted");
                 }
+            } else if (c == 't') {
+                if (shown->len)
+                    show_track_detail(&st,
+                        *(size_t *)vec_at((vec *)shown, st.lcur));
             } else if (c == 'i') {
                 for (size_t i = 0; i < shown->len; i++)
                     sel_toggle(&st, *(size_t *)vec_at((vec *)shown, i));
