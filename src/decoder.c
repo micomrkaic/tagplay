@@ -275,11 +275,25 @@ static int mp3_open(decoder *d, const char *path) {
 }
 
 /* ---------------- radio (live MP3 over ICY) ---------------- */
+#include <time.h>
+static long now_mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
 static long radio_fill_pcm(decoder *d) {
     /* decode one MP3 frame from the accumulation buffer; top up from the
      * network as needed. Returns frames decoded, 0 = need more data,
-     * -1 = stream ended. */
+     * -1 = stream ended/unusable.
+     *
+     * Bounded on purpose: a station serving AAC, an HLS playlist, or an
+     * HTML error page never syncs as MP3 — without a cap this would spin
+     * forever inside the audio thread, wedging every transport command.
+     * 256 KB of junk or 5 s without a single frame = unusable. */
+    size_t junk = 0;
+    long t0 = now_mono_ms();
     for (;;) {
+        if (junk > 256 * 1024 || now_mono_ms() - t0 > 5000) return -1;
         if (d->rin_len < 4096) {
             long got = radio_read(d->rs, d->rin + d->rin_len,
                                   sizeof d->rin - d->rin_len, 250);
@@ -292,11 +306,17 @@ static long radio_fill_pcm(decoder *d) {
                                           d->rpcm, &info);
         if (info.frame_bytes <= 0) {
             /* need more input to sync */
-            if (d->rin_len >= sizeof d->rin) d->rin_len = 0; /* junk flush */
+            if (d->rin_len >= sizeof d->rin) {
+                junk += d->rin_len;
+                d->rin_len = 0;                         /* junk flush */
+            }
             long got = radio_read(d->rs, d->rin + d->rin_len,
                                   sizeof d->rin - d->rin_len, 250);
             if (got < 0) return -1;
-            if (got == 0) return 0;
+            if (got == 0) {
+                if (d->r_started) return 0;             /* mid-stream lull */
+                continue;                                /* still probing */
+            }
             d->rin_len += (size_t)got;
             continue;
         }
@@ -341,13 +361,16 @@ static int radio_dopen(decoder *d, const char *url) {
     d->rs = radio_open(url);
     if (!d->rs) return -1;
     mp3dec_init(&d->rdec);
-    /* block briefly for the first frame so rate/channels are known */
-    for (int tries = 0; tries < 40 && !d->r_started; tries++) {
+    /* wait (bounded) for the first frame so rate/channels are known:
+     * connect timeout is 10 s in radio.c, sync cap 5 s in fill_pcm, and
+     * this loop adds a hard 12 s ceiling on the whole open */
+    long t0 = now_mono_ms();
+    while (!d->r_started && now_mono_ms() - t0 < 12000) {
         long r = radio_fill_pcm(d);
         if (r < 0) return -1;
         if (r > 0) break;
     }
-    if (!d->r_started) return -1;   /* ~10 s and no audio: give up */
+    if (!d->r_started) return -1;
     d->duration = 0;                /* live */
     d->ops = &RADIO_OPS;
     return 0;
