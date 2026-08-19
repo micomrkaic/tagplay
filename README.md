@@ -126,7 +126,13 @@ ALBUM, DATE, ...), then the rest, then the embedded cover art rendered
 as colored ASCII (truecolor terminals) — the answer to "which field is
 that in?". `a` in the queue view shows the cover big. Art is read from
 FLAC PICTURE blocks and ID3 APIC frames on demand (front cover
-preferred), decoded with the vendored stb_image; nothing is cached. Rows are classical-aware: a COMPOSER differing from ARTIST renders
+preferred), decoded with the vendored stb_image; nothing is cached.
+Rendering: if the `chafa` binary is installed it is used (best-in-class
+terminal graphics -- optimal symbol selection, dithering, and native
+pixel protocols on kitty/iTerm/sixel terminals); otherwise a built-in
+truecolor half-block renderer (two pixels per cell). libchafa is
+deliberately not linked -- it would pull in GLib. `apt install chafa`
+is optional and worth it. Rows are classical-aware: a COMPOSER differing from ARTIST renders
 as `Composer — Title (Performer)` in list, queue, and marquee.
 
 ## Commands
