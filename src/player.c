@@ -230,10 +230,10 @@ static void *audio_main(void *arg) {
             pthread_mutex_lock(&p->mu);
             if (!nd) { /* unreadable/unplayable: note it and skip */
                 const char *ttl = track_first_tag(t, "TITLE");
+                const char *why = decoder_open_error();
                 snprintf(p->note, sizeof p->note,
-                         "can't play: %s%s", ttl ? ttl : t->path,
-                         t->fmt == FMT_RADIO ?
-                         "  (unreachable or not an MP3 stream)" : "");
+                         "can't play: %s%s%s%s", ttl ? ttl : t->path,
+                         why[0] ? "  (" : "", why, why[0] ? ")" : "");
                 p->note_seq++;
                 if (p->qpos + 1 < p->queue.len) p->qpos++;
                 else p->playing = 0;

@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <ctype.h>
 
 #define RING_CAP   (512 * 1024)   /* ~30 s at 128 kbps */
 #define RING_HIGH  (RING_CAP - 65536)
@@ -58,11 +59,20 @@ struct radio_stream {
     size_t metalen;
     char   title[256];
     char   station[128];
+    char   ctype[64];      /* Content-Type, lowercased */
 
     /* inline (ICY 200 OK) header parsing */
     hdr_state hstate;
     char   hbuf[8192];
     size_t hlen;
+
+    /* playlist indirection: many mounts answer with a tiny m3u/pls TEXT
+     * file naming the real stream. Detect it from the first body bytes,
+     * collect it, extract the first URL, and transparently restart. */
+    int    pl_mode;        /* -1 unknown, 0 audio, 1 collecting playlist */
+    char   plbuf[8192];
+    size_t pllen;
+    char   next_url[1024]; /* set when a playlist named the real stream */
 
     int    error;          /* transfer ended or failed */
     int    stop;
@@ -86,6 +96,15 @@ static void hdr_line(radio_stream *r, const char *line, size_t n) {
     if (n > 12 && !strncasecmp(line, "icy-metaint:", 12)) {
         r->metaint = atol(line + 12);
         r->until_meta = r->metaint;
+    } else if (n > 13 && !strncasecmp(line, "content-type:", 13)) {
+        const char *v = line + 13;
+        while (*v == ' ') v++;
+        size_t m = n - (size_t)(v - line);
+        if (m >= sizeof r->ctype) m = sizeof r->ctype - 1;
+        for (size_t i = 0; i < m; i++)
+            r->ctype[i] = (char)tolower((unsigned char)v[i]);
+        r->ctype[m] = 0;
+        r->ctype[strcspn(r->ctype, "\r\n")] = 0;
     } else if (n > 9 && !strncasecmp(line, "icy-name:", 9)) {
         const char *v = line + 9;
         while (*v == ' ') v++;
@@ -197,6 +216,24 @@ static size_t on_body(char *buf, size_t sz, size_t nm, void *ud) {
         return sz * nm;
     }
 
+    if (r->pl_mode < 0) {
+        /* classify: playlists are short text ("#EXTM3U", "[playlist]",
+         * or a bare http URL); audio starts with ID3/MP3 sync/ICY */
+        r->pl_mode = 0;
+        if (n >= 7 && !memcmp(p, "#EXTM3U", 7)) r->pl_mode = 1;
+        else if (n >= 10 && !strncasecmp((const char *)p, "[playlist]", 10)) r->pl_mode = 1;
+        else if (n >= 7 && !memcmp(p, "http://", 7)) r->pl_mode = 1;
+        else if (n >= 8 && !memcmp(p, "https://", 8)) r->pl_mode = 1;
+    }
+    if (r->pl_mode == 1) {
+        size_t keep = n < sizeof r->plbuf - 1 - r->pllen
+                    ? n : sizeof r->plbuf - 1 - r->pllen;
+        memcpy(r->plbuf + r->pllen, p, keep);
+        r->pllen += keep;
+        pthread_mutex_unlock(&r->mu);
+        return sz * nm;   /* consume; resolution happens at transfer end */
+    }
+
     /* throttle: if the ring is full, wait for the consumer */
     while (!r->stop && r->rlen > RING_HIGH) {
         struct timespec ts;
@@ -212,18 +249,65 @@ static size_t on_body(char *buf, size_t sz, size_t nm, void *ud) {
     return stop ? 0 : sz * nm;
 }
 
+static void extract_playlist_url(radio_stream *r) {
+    r->plbuf[r->pllen] = 0;
+    for (char *l = strtok(r->plbuf, "\r\n"); l; l = strtok(NULL, "\r\n")) {
+        while (*l == ' ' || *l == '\t') l++;
+        const char *u = NULL;
+        if (!strncasecmp(l, "File", 4)) {         /* pls: FileN=url */
+            const char *eq = strchr(l, '=');
+            if (eq) u = eq + 1;
+        } else if (!strncmp(l, "http://", 7) || !strncmp(l, "https://", 8)) {
+            u = l;                                 /* m3u: bare URL line */
+        }
+        if (u && *u) {
+            snprintf(r->next_url, sizeof r->next_url, "%s", u);
+            return;
+        }
+    }
+}
+
 static void *curl_main(void *ud) {
     radio_stream *r = ud;
     CURLcode rc = curl_easy_perform(r->curl);
     (void)rc;
     pthread_mutex_lock(&r->mu);
-    r->error = 1;             /* ended (network error, server close, stop) */
+    if (r->pl_mode == 1 && r->pllen && !r->stop)
+        extract_playlist_url(r);
+    r->error = 1;             /* ended (or: playlist collected) */
     pthread_cond_broadcast(&r->cv);
     pthread_mutex_unlock(&r->mu);
     return NULL;
 }
 
+static radio_stream *radio_open_one(const char *url);
+
 radio_stream *radio_open(const char *url) {
+    char cur[1024];
+    snprintf(cur, sizeof cur, "%s", url);
+    for (int hop = 0; hop < 3; hop++) {
+        radio_stream *r = radio_open_one(cur);
+        if (!r) return NULL;
+        /* if the mount answered with a playlist, the curl thread ends
+         * quickly with next_url set; wait briefly for that verdict */
+        pthread_mutex_lock(&r->mu);
+        for (int i = 0; i < 60 && !r->error && r->rlen == 0; i++) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 100 * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+            pthread_cond_timedwait(&r->cv, &r->mu, &ts);
+        }
+        int redirect = (r->next_url[0] != 0);
+        if (redirect) snprintf(cur, sizeof cur, "%s", r->next_url);
+        pthread_mutex_unlock(&r->mu);
+        if (!redirect) return r;      /* real audio (or a real failure) */
+        radio_close(r);               /* follow the playlist's URL */
+    }
+    return NULL;
+}
+
+static radio_stream *radio_open_one(const char *url) {
     static int curl_init_done;
     if (!curl_init_done) {
         curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -236,6 +320,7 @@ radio_stream *radio_open(const char *url) {
     r->ring = xmalloc(RING_CAP);
     r->rcap = RING_CAP;
     r->hstate = H_MAYBE_INLINE;
+    r->pl_mode = -1;
 
     r->curl = curl_easy_init();
     if (!r->curl) { radio_close(r); return NULL; }
@@ -284,6 +369,10 @@ long radio_read(radio_stream *r, uint8_t *buf, size_t max, int timeout_ms) {
     pthread_cond_broadcast(&r->cv); /* wake a throttled producer */
     pthread_mutex_unlock(&r->mu);
     return (long)take;
+}
+
+const char *radio_content_type(radio_stream *r) {
+    return r->ctype;
 }
 
 int radio_title(radio_stream *r, char *out, size_t sz) {

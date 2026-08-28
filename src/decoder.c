@@ -19,6 +19,12 @@
 
 #include "decoder.h"
 #include "radio.h"
+#ifdef HAVE_FAAD
+#include <neaacdec.h>
+#endif
+
+static _Thread_local char g_open_err[160];
+const char *decoder_open_error(void) { return g_open_err; }
 #include <FLAC/stream_decoder.h>
 #define MINIMP3_IMPLEMENTATION
 #define MINIMP3_FLOAT_OUTPUT
@@ -56,6 +62,10 @@ struct decoder {
 
     /* radio */
     radio_stream *rs;
+    int           rcodec;       /* 0 = MP3, 1 = AAC */
+#ifdef HAVE_FAAD
+    NeAACDecHandle aac;
+#endif
     mp3dec_t      rdec;
     uint8_t       rin[32768];   /* compressed accumulation */
     size_t        rin_len;
@@ -301,6 +311,45 @@ static long radio_fill_pcm(decoder *d) {
             if (got > 0) d->rin_len += (size_t)got;
             else if (d->rin_len == 0) return 0; /* nothing yet */
         }
+#ifdef HAVE_FAAD
+        if (d->rcodec == 1) {   /* AAC via faad2 */
+            NeAACDecFrameInfo fi;
+            void *pcm = NeAACDecDecode(d->aac, &fi, d->rin,
+                                       (unsigned long)d->rin_len);
+            if (fi.error || fi.bytesconsumed == 0) {
+                /* resync: drop a byte and count it as junk */
+                if (d->rin_len) {
+                    memmove(d->rin, d->rin + 1, d->rin_len - 1);
+                    d->rin_len--;
+                    junk++;
+                }
+                long got = radio_read(d->rs, d->rin + d->rin_len,
+                                      sizeof d->rin - d->rin_len, 250);
+                if (got < 0) return -1;
+                if (got > 0) d->rin_len += (size_t)got;
+                else if (!d->r_started) continue;
+                else return 0;
+                continue;
+            }
+            memmove(d->rin, d->rin + fi.bytesconsumed,
+                    d->rin_len - fi.bytesconsumed);
+            d->rin_len -= fi.bytesconsumed;
+            if (fi.samples == 0) continue;
+            int ch = fi.channels ? fi.channels : 2;
+            long frames = (long)(fi.samples / (unsigned)ch);
+            if (!d->r_started) {
+                d->rate = (int)fi.samplerate;
+                d->channels = ch;
+                d->r_started = 1;
+            }
+            size_t maxf = sizeof d->rpcm / sizeof(float) / (size_t)ch;
+            if ((size_t)frames > maxf) frames = (long)maxf;
+            memcpy(d->rpcm, pcm, sizeof(float) * (size_t)frames * (size_t)ch);
+            d->rpcm_frames = frames;
+            d->rpcm_off = 0;
+            return frames;
+        }
+#endif
         mp3dec_frame_info_t info;
         int samples = mp3dec_decode_frame(&d->rdec, d->rin, (int)d->rin_len,
                                           d->rpcm, &info);
@@ -354,12 +403,61 @@ static long radio_dread(decoder *d, float *buf, long max_frames) {
     return done;
 }
 static int radio_dseek(decoder *d, double sec) { (void)d; (void)sec; return -1; }
-static void radio_dclose(decoder *d) { radio_close(d->rs); }
+static void radio_dclose(decoder *d) {
+#ifdef HAVE_FAAD
+    if (d->aac) NeAACDecClose(d->aac);
+#endif
+    radio_close(d->rs);
+}
 static const decoder_ops RADIO_OPS = { radio_dread, radio_dseek, radio_dclose };
 
 static int radio_dopen(decoder *d, const char *url) {
+    g_open_err[0] = 0;
     d->rs = radio_open(url);
-    if (!d->rs) return -1;
+    if (!d->rs) {
+        snprintf(g_open_err, sizeof g_open_err, "unreachable");
+        return -1;
+    }
+    /* prime a little data so codec classification can look at bytes */
+    long t0p = now_mono_ms();
+    while (d->rin_len < 4096 && now_mono_ms() - t0p < 6000) {
+        long got = radio_read(d->rs, d->rin + d->rin_len,
+                              sizeof d->rin - d->rin_len, 250);
+        if (got < 0) break;
+        if (got > 0) d->rin_len += (size_t)got;
+        if (d->rin_len >= 2048) break;
+    }
+    const char *ct = radio_content_type(d->rs);
+    int is_aac = (ct && strstr(ct, "aac")) ||
+                 (d->rin_len >= 2 && d->rin[0] == 0xFF &&
+                  (d->rin[1] & 0xF6) == 0xF0 &&
+                  !(ct && strstr(ct, "mpeg")));
+    if (is_aac) {
+#ifdef HAVE_FAAD
+        d->rcodec = 1;
+        d->aac = NeAACDecOpen();
+        NeAACDecConfigurationPtr cfg = NeAACDecGetCurrentConfiguration(d->aac);
+        cfg->outputFormat = FAAD_FMT_FLOAT;
+        cfg->downMatrix = 1;     /* fold surround to stereo */
+        NeAACDecSetConfiguration(d->aac, cfg);
+        unsigned long sr = 0;
+        unsigned char ch = 0;
+        long skip = NeAACDecInit(d->aac, d->rin,
+                                 (unsigned long)d->rin_len, &sr, &ch);
+        if (skip < 0) {
+            snprintf(g_open_err, sizeof g_open_err, "AAC stream init failed");
+            return -1;
+        }
+        if (skip > 0 && (size_t)skip <= d->rin_len) {
+            memmove(d->rin, d->rin + skip, d->rin_len - (size_t)skip);
+            d->rin_len -= (size_t)skip;
+        }
+#else
+        snprintf(g_open_err, sizeof g_open_err,
+                 "AAC stream: install libfaad-dev and rebuild");
+        return -1;
+#endif
+    }
     mp3dec_init(&d->rdec);
     /* wait (bounded) for the first frame so rate/channels are known:
      * connect timeout is 10 s in radio.c, sync cap 5 s in fill_pcm, and

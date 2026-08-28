@@ -41,6 +41,7 @@ One process, one binary, three libraries.
 ## Build
 
     make            # Linux: libflac-dev libpcre2-dev libsdl2-dev libcurl4-openssl-dev
+                    #        optional: libfaad-dev (AAC radio), chafa (best art)
                     # macOS: brew install flac pcre2 sdl2 curl pkg-config
     make install    # copies to ~/.local/bin
 
