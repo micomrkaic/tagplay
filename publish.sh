@@ -27,9 +27,25 @@ tagplay
 src/*.o
 testlib/
 *.tar.gz
+# never publish credentials, whatever they were named
+refurbkey*
+id_rsa* id_ecdsa* id_ed25519*
+*.pem
+*.key
 GITEOF
 
 git add -A
+
+# refuse to publish anything that looks like a private key or token:
+# scan the staged content itself, not just filenames
+if git diff --cached | grep -qE -- "-----BEGIN (OPENSSH |RSA |EC |DSA )?PRIVATE KEY|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"; then
+    echo "publish.sh: REFUSING to commit: staged content contains what looks"
+    echo "like a private key or access token. Unstage it and try again:"
+    git diff --cached --name-only | sed 's/^/    /'
+    git reset >/dev/null
+    exit 1
+fi
+
 git commit -m "$MSG" || echo "nothing to commit"
 
 if ! git remote get-url origin >/dev/null 2>&1; then

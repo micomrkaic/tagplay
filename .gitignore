@@ -2,3 +2,8 @@ tagplay
 src/*.o
 testlib/
 *.tar.gz
+# never publish credentials, whatever they were named
+refurbkey*
+id_rsa* id_ecdsa* id_ed25519*
+*.pem
+*.key
