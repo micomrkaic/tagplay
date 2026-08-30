@@ -69,7 +69,12 @@ struct decoder {
     mp3dec_t      rdec;
     uint8_t       rin[32768];   /* compressed accumulation */
     size_t        rin_len;
-    float         rpcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    /* PCM staging: must hold the LARGER of an MP3 frame (1152x2 = 2304
+     * floats) and an SBR/HE-AAC frame (2048 frames x 2 ch = 4096 floats;
+     * downMatrix caps channels at 2). Undersizing this drops samples --
+     * fast, clicking playback on upsampled streams. */
+#define RPCM_CAP 4096
+    float         rpcm[RPCM_CAP];
     long          rpcm_frames, rpcm_off;
     int           r_started;
 };
@@ -341,6 +346,10 @@ static long radio_fill_pcm(decoder *d) {
                 d->rate = (int)fi.samplerate;
                 d->channels = ch;
                 d->r_started = 1;
+            } else if ((int)fi.samplerate != d->rate || ch != d->channels) {
+                /* mid-stream format change: end the track cleanly; the
+                 * player reopens and relocks at the new format */
+                return -1;
             }
             size_t maxf = sizeof d->rpcm / sizeof(float) / (size_t)ch;
             if ((size_t)frames > maxf) frames = (long)maxf;
