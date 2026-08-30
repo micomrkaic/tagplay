@@ -271,7 +271,7 @@ static void station_add_track(table *tb, const char *name, const char *url) {
     t->path = xstrdup(url);
     t->fmt = FMT_RADIO;
     track_add_tag(t, "TITLE", name);
-    track_add_tag(t, "ARTIST", "Radio");
+    track_add_tag(t, "ARTIST", "Radio station");
     track_add_tag(t, "ALBUM", "Internet Radio");
 }
 static const char *SEED_STATIONS =
@@ -288,7 +288,27 @@ static const char *SEED_STATIONS =
     "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service\tBBC World Service (News)\n"
     "https://mp3.rtvslo.si/ars\tRadio Slovenija ARS\n"
     "https://mp3.rtvslo.si/val202\tVal 202\n"
-    "https://mp3.rtvslo.si/prvi\tRadio Slovenija Prvi (News)\n";
+    "https://mp3.rtvslo.si/prvi\tRadio Slovenija Prvi (News)\n"
+    "http://stream0.wfmu.org/freeform-128k.mp3\tWFMU Freeform\n"
+    "http://kruljo.radiostudent.si:8000/ehiq\tRadio \xc5\xa0tudent Ljubljana\n"
+    "https://wwoz-sc.streamguys1.com/wwoz-hi.mp3\tWWOZ New Orleans\n"
+    "https://icecast.radiofrance.fr/fipworld-midfi.mp3\tFIP World\n"
+    "https://icecast.radiofrance.fr/fipgroove-midfi.mp3\tFIP Groove\n"
+    "https://icecast.radiofrance.fr/fiprock-midfi.mp3\tFIP Rock\n"
+    "https://icecast.radiofrance.fr/fipjazz-midfi.mp3\tFIP Jazz\n"
+    "https://knkx-live-a.edge.audiocdn.com/6285_128k\tJazz24\n"
+    "https://stream.wfmt.com/main-mp3\tWFMT Chicago Classical\n"
+    "https://ice5.somafm.com/secretagent-128-mp3\tSomaFM Secret Agent\n"
+    "https://ice5.somafm.com/dronezone-256-mp3\tSomaFM Drone Zone\n"
+    "https://ice5.somafm.com/u80s-256-mp3\tSomaFM Underground 80s\n"
+    "https://ice5.somafm.com/illstreet-128-mp3\tSomaFM Illinois Street Lounge\n"
+    "https://stream.radioparadise.com/world-etc-192\tRadio Paradise World-Etc\n"
+    "https://stream.srg-ssr.ch/srgssr/rsp/mp3/128\tRadio Swiss Pop\n"
+    "http://ice24.securenetsystems.net/WAMU\tBluegrass Country (WAMU)\n"
+    "https://kexp.streamguys1.com/kexp160.aac\tKEXP Seattle\n"
+    "https://weta.streamguys1.com/wetaclassical-icy\tWETA Classical\n"
+    "https://weta.streamguys1.com/wetavirtuoso-icy\tWETA Virtuoso\n"
+    "https://weta.streamguys1.com/wetavivalavoce-icy\tWETA VivaLaVoce\n";
 
 size_t stations_load(table *tb) {   /* also called from main.c */
     char p[4096];
