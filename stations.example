@@ -1,0 +1,14 @@
+# tagplay stations: URL <TAB> Name. Lines starting with # ignored.
+# Seeded on first run; edit freely, or :radio add / :radio rm in-app.
+http://stream.srg-ssr.ch/m/rsc_de/mp3_128	Radio Swiss Classic
+http://stream.srg-ssr.ch/m/rsj/mp3_128	Radio Swiss Jazz
+https://icecast.radiofrance.fr/francemusique-midfi.mp3	France Musique
+https://icecast.radiofrance.fr/fip-midfi.mp3	FIP (Radio France)
+https://stream.wqxr.org/wqxr	WQXR New York Classical
+http://stream.radioparadise.com/mp3-192	Radio Paradise (Main Mix)
+https://ice1.somafm.com/groovesalad-128-mp3	SomaFM Groove Salad
+https://npr-ice.streamguys1.com/live.mp3	NPR Live (News)
+http://stream.live.vc.bbcmedia.co.uk/bbc_world_service	BBC World Service (News)
+https://mp3.rtvslo.si/ars	Radio Slovenija ARS
+https://mp3.rtvslo.si/val202	Val 202
+https://mp3.rtvslo.si/prvi	Radio Slovenija Prvi (News);

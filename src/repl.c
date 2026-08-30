@@ -286,9 +286,9 @@ static const char *SEED_STATIONS =
     "https://ice1.somafm.com/groovesalad-128-mp3\tSomaFM Groove Salad\n"
     "https://npr-ice.streamguys1.com/live.mp3\tNPR Live (News)\n"
     "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service\tBBC World Service (News)\n"
-    "http://mp3.rtvslo.si/ars\tRadio Slovenija ARS\n"
-    "http://mp3.rtvslo.si/val202\tVal 202\n"
-    "http://mp3.rtvslo.si/prvi\tRadio Slovenija Prvi (News)\n";
+    "https://mp3.rtvslo.si/ars\tRadio Slovenija ARS\n"
+    "https://mp3.rtvslo.si/val202\tVal 202\n"
+    "https://mp3.rtvslo.si/prvi\tRadio Slovenija Prvi (News)\n";
 
 size_t stations_load(table *tb) {   /* also called from main.c */
     char p[4096];
