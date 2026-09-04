@@ -6,11 +6,14 @@ CC      ?= cc
 CFLAGS  += -Isrc/core -Isrc/play
 CFLAGS  += -std=c17 -O2 -Wall -Wextra -Wpedantic -D_GNU_SOURCE
 CFLAGS  += $(shell pkg-config --cflags flac libpcre2-8 sdl2 libcurl)
-# optional AAC radio support, auto-detected (Debian/Ubuntu: libfaad-dev)
-HAVE_FAAD := $(shell test -e /usr/include/neaacdec.h -o -e /usr/local/include/neaacdec.h && echo 1)
-ifeq ($(HAVE_FAAD),1)
-CFLAGS  += -DHAVE_FAAD
-FAAD_LIB = -lfaad
+# optional AAC radio support, auto-detected
+# (Debian/Ubuntu: libfaad-dev; macOS: brew install faad2)
+FAAD_HDR := $(firstword $(wildcard /usr/include/neaacdec.h \
+                                   /usr/local/include/neaacdec.h \
+                                   /opt/homebrew/include/neaacdec.h))
+ifneq ($(FAAD_HDR),)
+CFLAGS  += -DHAVE_FAAD -I$(dir $(FAAD_HDR))
+FAAD_LIB = -L$(dir $(FAAD_HDR))../lib -lfaad
 endif
 
 LDLIBS  += $(shell pkg-config --libs flac libpcre2-8 sdl2 libcurl) $(FAAD_LIB) -lpthread -lm
