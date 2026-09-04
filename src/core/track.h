@@ -28,13 +28,13 @@ typedef struct {
     char *value;  /* UTF-8 */
 } tagkv;
 
-typedef enum { FMT_FLAC, FMT_WAV, FMT_MP3, FMT_RADIO, FMT_UNKNOWN } audio_fmt;
+/* format is an app-defined id (see app.h); core treats it opaquely */
 
 typedef struct {
     char     *path;
     int64_t   mtime;
     int64_t   fsize;
-    audio_fmt fmt;
+    int fmt;
     uint32_t  sample_rate;
     uint32_t  channels;
     double    duration;   /* seconds; 0 if unknown */
@@ -47,7 +47,6 @@ void track_add_tag(track *t, const char *key, const char *value);
 /* all values for key (case-insensitive); returns count, fills out[] up to max */
 size_t track_get_tags(const track *t, const char *key, const char **out, size_t max);
 const char *track_first_tag(const track *t, const char *key); /* or NULL */
-const char *fmt_name(audio_fmt f);
 
 typedef struct {
     vec tracks; /* vec of track */

@@ -17,21 +17,13 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef TP_TAGS_H
-#define TP_TAGS_H
+#ifndef TP_ART_AUDIO_H
+#define TP_ART_AUDIO_H
 #include "track.h"
+#include <stdint.h>
+#include <stddef.h>
 
-/* the audio app's format ids (core sees only an int) */
-typedef enum { FMT_FLAC, FMT_WAV, FMT_MP3, FMT_RADIO, FMT_UNKNOWN = -1 } audio_fmt;
-const char *fmt_name(int f);
-
-/* Each fills tags + audio params on t (path/mtime/fsize already set).
- * Return 0 on success, -1 on unreadable/corrupt. */
-int tags_read_flac(track *t);
-int tags_read_wav(track *t);
-int tags_read_mp3(track *t);
-
-/* If TITLE missing, synthesize TITLE/ALBUM/ARTIST from path; adds SOURCE=path */
-void tags_fallback_from_path(track *t);
+/* embedded cover art from FLAC/MP3, malloc'd; NULL if none */
+uint8_t *audio_art_read(const track *t, size_t *len);
 
 #endif

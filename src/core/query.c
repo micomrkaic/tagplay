@@ -19,6 +19,7 @@
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include "query.h"
+#include "app.h"
 #include <pcre2.h>
 #include <stdlib.h>
 #include <string.h>
@@ -322,9 +323,11 @@ qnode *query_parse(const char *src, int tolerant) {
 
 /* ---------------- evaluation ---------------- */
 static int numeric_field(const track *t, const char *field, double *out) {
-    if (str_ieq(field, "length"))   { *out = t->duration;     return 1; }
-    if (str_ieq(field, "rate"))     { *out = t->sample_rate;  return 1; }
-    if (str_ieq(field, "channels")) { *out = t->channels;     return 1; }
+    for (size_t i = 0; i < APP->nfields; i++)
+        if (str_ieq(field, APP->fields[i].name)) {
+            *out = APP->fields[i].value(t);
+            return 1;
+        }
     const char *map = NULL;
     if (str_ieq(field, "year"))  map = "DATE";
     if (str_ieq(field, "track")) map = "TRACKNUMBER";
@@ -358,7 +361,7 @@ static int str_pred(const qnode *q, const track *t) {
         if (matched && q->op != OP_NE) return 1;
     }
     if (wild || str_ieq(q->field, "format")) {
-        const char *s = fmt_name(t->fmt);
+        const char *s = APP->fmt_name(t->fmt);
         if (q->op == OP_RE) matched |= re_matches(q->re, s);
         else matched |= str_ieq(s, q->value);
         if (matched && q->op != OP_NE) return 1;

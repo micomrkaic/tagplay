@@ -196,9 +196,15 @@ The tree is split into shared machinery and the player, ahead of a
 sibling image browser (tagview) that will reuse the core:
 
     src/core/        app-agnostic: the item-with-tags model, query
-                     engine, scanner, cache, art rendering, utilities
+                     engine, scanner, cache, art rendering, utilities.
+                     Core never assumes items are audio: everything
+                     app-specific goes through the tp_app descriptor
+                     (src/core/app.h) -- file probing, tag reading,
+                     format names, query pseudo-fields, cacheability,
+                     embedded-art extraction.
     src/play/        the music player: decoders, DSP, radio, transport,
-                     the terminal UI
+                     the terminal UI, and app_play.c, the audio answers
+                     to the descriptor
 
     src/core/query.c lexer -> tolerant parser -> AST -> PCRE2 evaluator
     src/scan.c       recursive walk, magic-byte probe, cache-aware

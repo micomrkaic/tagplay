@@ -18,7 +18,7 @@
  */
 
 #include "scan.h"
-#include "tags.h"
+#include "app.h"
 #include <dirent.h>
 #include <sys/stat.h>
 #include <stdio.h>
@@ -69,18 +69,6 @@ static void track_copy(track *dst, const track *src) {
     }
 }
 
-static audio_fmt probe(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return FMT_UNKNOWN;
-    uint8_t m[12] = { 0 };
-    size_t n = fread(m, 1, sizeof m, f);
-    fclose(f);
-    if (n >= 4 && !memcmp(m, "fLaC", 4)) return FMT_FLAC;
-    if (n >= 12 && !memcmp(m, "RIFF", 4) && !memcmp(m + 8, "WAVE", 4)) return FMT_WAV;
-    if (n >= 3 && !memcmp(m, "ID3", 3)) return FMT_MP3;
-    if (n >= 2 && m[0] == 0xFF && (m[1] & 0xE0) == 0xE0) return FMT_MP3;
-    return FMT_UNKNOWN;
-}
 
 static size_t scan_rec(const char *dir, table *out, const cache_idx *ci) {
     size_t parsed = 0;
@@ -99,27 +87,21 @@ static size_t scan_rec(const char *dir, table *out, const cache_idx *ci) {
         }
         if (!S_ISREG(st.st_mode)) continue;
 
-        /* cheap extension pre-filter to avoid probing every file */
-        const char *dot = strrchr(e->d_name, '.');
-        if (!dot) continue;
-        if (strcasecmp(dot, ".flac") && strcasecmp(dot, ".wav") &&
-            strcasecmp(dot, ".mp3"))
-            continue;
+        /* cheap app pre-filter to avoid probing every file */
+        if (!APP->want_path(e->d_name)) continue;
 
         const track *c = cidx_find(ci, path);
         if (c && c->mtime == (int64_t)st.st_mtime && c->fsize == (int64_t)st.st_size) {
             track_copy(table_add(out), c);
             continue;
         }
-        audio_fmt f = probe(path);
-        if (f == FMT_UNKNOWN) continue;
+        int f = APP->probe(path);
+        if (f < 0) continue;
         track *t = table_add(out);
         t->path = xstrdup(path);
         t->mtime = (int64_t)st.st_mtime;
         t->fsize = (int64_t)st.st_size;
-        int rc = (f == FMT_FLAC) ? tags_read_flac(t)
-               : (f == FMT_WAV)  ? tags_read_wav(t)
-                                 : tags_read_mp3(t);
+        int rc = APP->read_item(t, f);
         if (rc) { /* unreadable: drop the slot */
             track_free(t);
             out->tracks.len--;

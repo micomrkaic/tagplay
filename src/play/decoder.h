@@ -20,6 +20,7 @@
 #ifndef TP_DECODER_H
 #define TP_DECODER_H
 #include "track.h"
+#include "tags.h"
 
 /* Uniform decoder: all formats present interleaved float32 in [-1,1]. */
 typedef struct decoder decoder;

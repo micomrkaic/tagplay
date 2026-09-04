@@ -22,6 +22,8 @@
 #include "player.h"
 #include "cache.h"
 #include "art.h"
+#include "app.h"
+#include "tags.h"
 
 #define COL_ALBUM 1u
 #define COL_YEAR  2u
@@ -961,7 +963,7 @@ static void show_track_detail(rstate *st, size_t ti) {
     /* embedded cover, if any, below the tags */
     if (t->fmt == FMT_FLAC || t->fmt == FMT_MP3) {
         size_t alen = 0;
-        uint8_t *img = art_extract(t->path, t->fmt, &alen);
+        uint8_t *img = APP->art_read ? APP->art_read(t, &alen) : NULL;
         if (img) {
             printf("\n");
             int cols = term_cols() - 4;
@@ -988,7 +990,7 @@ static void show_art(rstate *st, size_t ti) {
     track_identity(t, who, sizeof who);
     size_t alen = 0;
     uint8_t *img = (t->fmt == FMT_FLAC || t->fmt == FMT_MP3)
-                 ? art_extract(t->path, t->fmt, &alen) : NULL;
+                 ? (APP->art_read ? APP->art_read(t, &alen) : NULL) : NULL;
     if (img) {
         int cols = term_cols() - 2;
         int rows = term_rows() - 4;

@@ -25,15 +25,17 @@
 #include "cache.h"
 #include "query.h"
 #include "repl.h"
+#include "app.h"
 #include "player.h"
 #include "decoder.h"
 
 static void default_cache_path(char *out, size_t sz) {
     const char *xdg = getenv("XDG_CACHE_HOME");
-    if (xdg && *xdg) snprintf(out, sz, "%s/tagplay/cache.bin", xdg);
+    if (xdg && *xdg) snprintf(out, sz, "%s/%s/%s", xdg, APP->name, APP->cache_file);
     else {
         const char *home = getenv("HOME");
-        snprintf(out, sz, "%s/.cache/tagplay/cache.bin", home ? home : ".");
+        snprintf(out, sz, "%s/.cache/%s/%s", home ? home : ".",
+                 APP->name, APP->cache_file);
     }
 }
 

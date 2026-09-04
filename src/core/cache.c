@@ -18,6 +18,7 @@
  */
 
 #include "cache.h"
+#include "app.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,7 +26,9 @@
 #include <errno.h>
 
 #define CACHE_MAGIC   "TGP1"
-#define CACHE_VERSION 3u /* v3: CP1252 decoding, C1 stripped */
+#define CACHE_VERSION 3u   /* v3: CP1252 decoding, C1 stripped */
+/* the app adds a salt so player and viewer caches can never collide */
+#define CACHE_VERSION_EFF (CACHE_VERSION + APP->cache_version)
 
 static void w32(FILE *f, uint32_t v) { fwrite(&v, 4, 1, f); }
 static void w64(FILE *f, uint64_t v) { fwrite(&v, 8, 1, f); }
@@ -54,14 +57,14 @@ int cache_save(const char *path, const table *tb) {
     FILE *f = fopen(tmppath, "wb");
     if (!f) return -1;
     fwrite(CACHE_MAGIC, 1, 4, f);
-    w32(f, CACHE_VERSION);
+    w32(f, CACHE_VERSION_EFF);
     uint32_t nfile = 0;
     for (size_t i = 0; i < table_len(tb); i++)
-        if (table_at(tb, i)->fmt != FMT_RADIO) nfile++;
+        if (APP->cacheable(table_at(tb, i))) nfile++;
     w32(f, nfile);
     for (size_t i = 0; i < table_len(tb); i++) {
         const track *t = table_at(tb, i);
-        if (t->fmt == FMT_RADIO) continue;   /* stations live in their own file */
+        if (!APP->cacheable(t)) continue;
         wstr(f, t->path);
         w64(f, (uint64_t)t->mtime);
         w64(f, (uint64_t)t->fsize);
@@ -86,7 +89,7 @@ int cache_load(const char *path, table *tb) {
     char magic[4];
     uint32_t ver, count;
     if (fread(magic, 1, 4, f) != 4 || memcmp(magic, CACHE_MAGIC, 4) ||
-        r32(f, &ver) || ver != CACHE_VERSION || r32(f, &count)) {
+        r32(f, &ver) || ver != CACHE_VERSION_EFF || r32(f, &count)) {
         fclose(f);
         return -1;
     }
@@ -100,7 +103,7 @@ int cache_load(const char *path, table *tb) {
         if (r64(f, &u)) goto corrupt;
         t->fsize = (int64_t)u;
         if (r32(f, &x)) goto corrupt;
-        t->fmt = (audio_fmt)x;
+        t->fmt = (int)x;
         if (r32(f, &t->sample_rate)) goto corrupt;
         if (r32(f, &t->channels)) goto corrupt;
         if (rf8(f, &t->duration)) goto corrupt;
