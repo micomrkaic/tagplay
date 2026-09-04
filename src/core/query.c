@@ -466,5 +466,5 @@ void query_sort(const table *tb, vec *idx, const char *fields) {
         sc.n++;
     }
     free(copy);
-    if (sc.n) psort(idx->data, idx->len, sizeof(size_t), track_cmp, &sc);
+    if (sc.n) tp_sort(idx->data, idx->len, sizeof(size_t), track_cmp, &sc);
 }

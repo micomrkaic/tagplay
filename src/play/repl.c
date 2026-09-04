@@ -590,7 +590,7 @@ static int group_cmp(const void *a, const void *b, void *ud) {
 static void apply_group(rstate *st) {
     if (!st->group[0] || !st->match.len) return;
     struct gctx g = { st->tb, st->group };
-    psort(st->match.data, st->match.len, sizeof(size_t), group_cmp, &g);
+    tp_sort(st->match.data, st->match.len, sizeof(size_t), group_cmp, &g);
 }
 
 static void rerun(rstate *st) {

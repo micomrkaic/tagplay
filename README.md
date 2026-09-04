@@ -192,7 +192,15 @@ the years; prune with `:radio rm`.
 
 ## Source map
 
-    src/query.c      lexer -> tolerant parser -> AST -> PCRE2 evaluator
+The tree is split into shared machinery and the player, ahead of a
+sibling image browser (tagview) that will reuse the core:
+
+    src/core/        app-agnostic: the item-with-tags model, query
+                     engine, scanner, cache, art rendering, utilities
+    src/play/        the music player: decoders, DSP, radio, transport,
+                     the terminal UI
+
+    src/core/query.c lexer -> tolerant parser -> AST -> PCRE2 evaluator
     src/scan.c       recursive walk, magic-byte probe, cache-aware
     src/tags_*.c     libFLAC metadata; RIFF INFO; minimal ID3v2.3/2.4
                      (CP1252, UTF-16, unsync, TXXX, multi-value)

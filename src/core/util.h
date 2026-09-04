@@ -48,8 +48,8 @@ const char *str_icasestr(const char *hay, const char *needle);
 uint8_t *read_file(const char *path, size_t *len);
 
 /* portable qsort_r: identical behavior on glibc, musl, macOS. Uses a
- * thread-local trampoline, so don't nest psort calls inside comparators. */
-void psort(void *base, size_t n, size_t esz,
+ * thread-local trampoline, so don't nest tp_sort calls inside comparators. */
+void tp_sort(void *base, size_t n, size_t esz,
            int (*cmp)(const void *, const void *, void *), void *arg);
 
 void util_mkdirs_for(const char *path); /* mkdir -p dirname(path) */

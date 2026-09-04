@@ -92,7 +92,7 @@ static _Thread_local struct {
 static int psort_tramp(const void *a, const void *b) {
     return psort_ctx.cmp(a, b, psort_ctx.arg);
 }
-void psort(void *base, size_t n, size_t esz,
+void tp_sort(void *base, size_t n, size_t esz,
            int (*cmp)(const void *, const void *, void *), void *arg) {
     psort_ctx.cmp = cmp;
     psort_ctx.arg = arg;

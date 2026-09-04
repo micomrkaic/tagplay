@@ -39,7 +39,7 @@ static void cidx_build(cache_idx *ci, const table *tb) {
     vec_init(&ci->idx, sizeof(size_t));
     if (!tb) return;
     for (size_t i = 0; i < table_len(tb); i++) vec_push(&ci->idx, &i);
-    psort(ci->idx.data, ci->idx.len, sizeof(size_t), cmp_pathidx, (void *)tb);
+    tp_sort(ci->idx.data, ci->idx.len, sizeof(size_t), cmp_pathidx, (void *)tb);
 }
 
 static const track *cidx_find(const cache_idx *ci, const char *path) {
