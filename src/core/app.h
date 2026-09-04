@@ -31,6 +31,8 @@
 
 /* app-defined numeric pseudo-fields for the query language
  * (play: length, rate, channels; view: width, height, ...) */
+struct browser;   /* core/browser.h */
+
 typedef struct pseudo_field {
     const char *name;
     double    (*value)(const track *t);
@@ -54,6 +56,25 @@ typedef struct tp_app {
 
     /* -- embedded art (inspector / 'a' view); NULL if none -- */
     uint8_t *(*art_read)(const track *t, size_t *len);
+
+    /* ---- browser UI hooks (core/browser.h); any may be NULL ---- */
+    const char *help_text;                       /* :help screen body */
+    const char *const *id_keys;                  /* inspector tag order */
+    void  (*identity)(const track *t, char *out, size_t sz);
+    void  (*detail_header)(const track *t, char *out, size_t sz);
+    int   (*ui_pulse)(void *ui);                 /* 0 idle, 1 fast, 2 slow */
+    uint64_t (*ui_sig)(void *ui);                /* layout-affecting state */
+    int   (*poll_msg)(void *ui, char *out, size_t sz);
+    int   (*status_rows)(void *ui);              /* status region height */
+    void  (*status)(void *ui, struct browser *b, int cols);
+    size_t (*alt_len)(void *ui);                 /* alt (queue) view size */
+    size_t (*alt_home)(void *ui);                /* initial alt cursor */
+    void  (*alt_view)(void *ui, struct browser *b);
+    int   (*alt_key)(void *ui, struct browser *b, int key);
+    int   (*alt_snapshot)(void *ui, struct browser *b);
+    void  (*on_enter)(void *ui, struct browser *b, const vec *items, int from_sel);
+    int   (*global_key)(void *ui, struct browser *b, int key);
+    int   (*command)(void *ui, struct browser *b, const char *cmd);
 } tp_app;
 
 /* set by the binary's main() before any core machinery runs */

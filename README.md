@@ -202,9 +202,16 @@ sibling image browser (tagview) that will reuse the core:
                      (src/core/app.h) -- file probing, tag reading,
                      format names, query pseudo-fields, cacheability,
                      embedded-art extraction.
+                     The interactive browser (query line, list,
+                     selection, grouping, surgical refresh) lives in
+                     core/browser.c and drives the app through the same
+                     descriptor: row identity, the alternate view (the
+                     player's queue), the status region (VU/marquee),
+                     transport keys, and app commands are all hooks.
     src/play/        the music player: decoders, DSP, radio, transport,
-                     the terminal UI, and app_play.c, the audio answers
-                     to the descriptor
+                     console.c (the player's answers to the browser's
+                     UI hooks), and app_play.c (the audio answers to
+                     the data-plane hooks)
 
     src/core/query.c lexer -> tolerant parser -> AST -> PCRE2 evaluator
     src/scan.c       recursive walk, magic-byte probe, cache-aware

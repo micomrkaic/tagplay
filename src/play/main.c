@@ -24,7 +24,8 @@
 #include "scan.h"
 #include "cache.h"
 #include "query.h"
-#include "repl.h"
+#include "browser.h"
+#include "console.h"
 #include "app.h"
 #include "player.h"
 #include "decoder.h"
@@ -186,7 +187,7 @@ int main(int argc, char **argv) {
         vec_free(&idx);
     } else {
         player *pl = player_create(&tb);
-        repl_run(&tb, pl);
+        browser_run(&tb, console_init(pl));
         player_destroy(pl);
     }
     table_free(&tb);

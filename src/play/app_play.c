@@ -22,6 +22,7 @@
 #include "app.h"
 #include "tags.h"
 #include "art_audio.h"
+#include "console.h"
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -96,6 +97,25 @@ static const tp_app PLAY_APP = {
     .fields        = play_fields,
     .nfields       = sizeof play_fields / sizeof *play_fields,
     .art_read      = play_art_read,
+    .id_keys       = (const char *const []){
+        "TITLE", "ARTIST", "ALBUMARTIST", "COMPOSER", "PERFORMER",
+        "CONDUCTOR", "ORCHESTRA", "ENSEMBLE", "ALBUM", "DATE",
+        "TRACKNUMBER", "DISCNUMBER", "GENRE", NULL },
+    .identity      = console_hook_identity,
+    .detail_header = console_detail_header,
+    .ui_pulse      = console_pulse,
+    .ui_sig        = console_sig,
+    .poll_msg      = console_poll_msg,
+    .status_rows   = console_status_rows,
+    .status        = console_status,
+    .alt_len       = console_alt_len,
+    .alt_home      = console_alt_home,
+    .alt_view      = console_alt_view,
+    .alt_key       = console_alt_key,
+    .alt_snapshot  = console_alt_snapshot,
+    .on_enter      = console_on_enter,
+    .global_key    = console_global_key,
+    .command       = console_command,
 };
 
 const tp_app *APP = &PLAY_APP;
