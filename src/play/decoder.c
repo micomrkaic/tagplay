@@ -28,7 +28,12 @@ const char *decoder_open_error(void) { return g_open_err; }
 #include <FLAC/stream_decoder.h>
 #define MINIMP3_IMPLEMENTATION
 #define MINIMP3_FLOAT_OUTPUT
+/* vendored header predates C23's prototype strictness; silence the
+ * deprecation at the include site rather than editing the artifact */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-prototypes"
 #include "minimp3_ex.h"
+#pragma GCC diagnostic pop
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

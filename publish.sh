@@ -24,7 +24,7 @@ fi
 
 cat > .gitignore <<'GITEOF'
 tagplay
-src/*.o
+*.o
 testlib/
 *.tar.gz
 # never publish credentials, whatever they were named
