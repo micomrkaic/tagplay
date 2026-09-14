@@ -442,10 +442,13 @@ static int radio_dopen(decoder *d, const char *url) {
         if (d->rin_len >= 2048) break;
     }
     const char *ct = radio_content_type(d->rs);
-    int is_aac = (ct && strstr(ct, "aac")) ||
-                 (d->rin_len >= 2 && d->rin[0] == 0xFF &&
-                  (d->rin[1] & 0xF6) == 0xF0 &&
-                  !(ct && strstr(ct, "mpeg")));
+    /* The byte sniff outranks the Content-Type header: ADTS sync (0xFF
+     * with layer bits 00) is never valid MPEG audio, so when the bytes
+     * say AAC the server's label is simply wrong -- routing such a
+     * stream to minimp3 decodes noise. Servers lie; bitstreams don't. */
+    int is_aac = (d->rin_len >= 2 && d->rin[0] == 0xFF &&
+                  (d->rin[1] & 0xF6) == 0xF0) ||
+                 (ct && strstr(ct, "aac"));
     if (is_aac) {
 #ifdef HAVE_FAAD
         d->rcodec = 1;
