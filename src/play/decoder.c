@@ -327,19 +327,25 @@ static long radio_fill_pcm(decoder *d) {
             void *pcm = NeAACDecDecode(d->aac, &fi, d->rin,
                                        (unsigned long)d->rin_len);
             if (fi.error || fi.bytesconsumed == 0) {
-                /* resync: drop a byte and count it as junk */
-                if (d->rin_len) {
-                    memmove(d->rin, d->rin + 1, d->rin_len - 1);
-                    d->rin_len--;
+                /* "error" also means "partial frame": when the decode
+                 * loop outruns the network the buffer holds a frame
+                 * fragment, and dropping a byte here corrupts a GOOD
+                 * stream -- one lost frame per buffer-low event, heard
+                 * as crackle at frame cadence. Starving and corrupt are
+                 * different conditions: refill first, and only drop a
+                 * byte when a full frame's worth of data really won't
+                 * decode. */
+                if (d->rin_len >= 4096) {
+                    memmove(d->rin, d->rin + 1, --d->rin_len);
                     junk++;
+                    continue;
                 }
                 long got = radio_read(d->rs, d->rin + d->rin_len,
                                       sizeof d->rin - d->rin_len, 250);
                 if (got < 0) return -1;
-                if (got > 0) d->rin_len += (size_t)got;
-                else if (!d->r_started) continue;
-                else return 0;
-                continue;
+                if (got > 0) { d->rin_len += (size_t)got; continue; }
+                if (!d->r_started) continue;
+                return 0;
             }
             memmove(d->rin, d->rin + fi.bytesconsumed,
                     d->rin_len - fi.bytesconsumed);
@@ -468,6 +474,63 @@ static int radio_dopen(decoder *d, const char *url) {
         if (skip > 0 && (size_t)skip <= d->rin_len) {
             memmove(d->rin, d->rin + skip, d->rin_len - (size_t)skip);
             d->rin_len -= (size_t)skip;
+        }
+        /* Rate settling: on HE-AAC (SBR) streams faad reports the CORE
+         * rate for the first frame(s) and the doubled true rate once
+         * the first SBR header arrives. Locking the device rate from
+         * frame one therefore locks the WRONG rate (distortion), and
+         * the mid-stream change guard then kills the track (silence).
+         * Decode until the reported rate is stable across consecutive
+         * frames, keep the last settled frame as the first delivery,
+         * and only then lock. */
+        {
+            unsigned long sr_prev = 0;
+            int stable = 0, tries = 0;
+            long t0s = now_mono_ms();
+            while (stable < 1 && tries < 24 &&
+                   now_mono_ms() - t0s < 5000) {
+                if (d->rin_len < 2048) {
+                    long got = radio_read(d->rs, d->rin + d->rin_len,
+                                          sizeof d->rin - d->rin_len, 250);
+                    if (got > 0) d->rin_len += (size_t)got;
+                }
+                if (!d->rin_len) { tries++; continue; }
+                NeAACDecFrameInfo fi;
+                void *pcm = NeAACDecDecode(d->aac, &fi, d->rin,
+                                           (unsigned long)d->rin_len);
+                tries++;
+                if (fi.error || fi.bytesconsumed == 0) {
+                    if (d->rin_len >= 4096)
+                        memmove(d->rin, d->rin + 1, --d->rin_len);
+                    continue;   /* short buffer: the loop head refills */
+                }
+                memmove(d->rin, d->rin + fi.bytesconsumed,
+                        d->rin_len - fi.bytesconsumed);
+                d->rin_len -= fi.bytesconsumed;
+                if (!fi.samples) continue;
+                int fch = fi.channels ? fi.channels : 2;
+                if (fi.samplerate && fi.samplerate == sr_prev) {
+                    stable = 1;   /* two consecutive frames agree */
+                    d->rate = (int)fi.samplerate;
+                    d->channels = fch;
+                    d->r_started = 1;
+                    /* keep this frame as the first audio delivered */
+                    long frames = (long)(fi.samples / (unsigned)fch);
+                    size_t maxf = sizeof d->rpcm / sizeof(float)
+                                / (size_t)fch;
+                    if ((size_t)frames > maxf) frames = (long)maxf;
+                    memcpy(d->rpcm, pcm,
+                           sizeof(float) * (size_t)frames * (size_t)fch);
+                    d->rpcm_frames = frames;
+                    d->rpcm_off = 0;
+                }
+                sr_prev = fi.samplerate;
+            }
+            if (!stable) {
+                snprintf(g_open_err, sizeof g_open_err,
+                         "AAC stream: rate never settled");
+                return -1;
+            }
         }
 #else
         snprintf(g_open_err, sizeof g_open_err,
