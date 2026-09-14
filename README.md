@@ -133,7 +133,16 @@ terminal graphics -- optimal symbol selection, dithering, and native
 pixel protocols on kitty/iTerm/sixel terminals); otherwise a built-in
 truecolor half-block renderer (two pixels per cell). libchafa is
 deliberately not linked -- it would pull in GLib. `apt install chafa`
-is optional and worth it. Rows are classical-aware: a COMPOSER differing from ARTIST renders
+is optional and worth it.
+
+ADTS frame alignment is tagplay's own job: libfaad >= 2.11 no longer
+hunts for sync, so joining a live stream mid-frame (which is every
+join) is handled by scanning for a validated sync -- a header whose
+frame-length lands exactly on another header -- before the decoder
+sees a byte, and resynchronization after damage jumps to the next
+validated sync rather than inching bytewise. tests/run_radio.sh
+replays real captured broadcaster streams (mid-frame joins, starved
+delivery, lying Content-Type headers) through the full stack. Rows are classical-aware: a COMPOSER differing from ARTIST renders
 as `Composer — Title (Performer)` in list, queue, and marquee.
 
 ## Commands

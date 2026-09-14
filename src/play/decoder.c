@@ -24,6 +24,29 @@
 #endif
 
 static _Thread_local char g_open_err[160];
+
+#ifdef HAVE_FAAD
+struct decoder;
+/* Find a VALIDATED ADTS sync in p[0..n): a header whose frame_length
+ * lands exactly on another sync word. A live radio join starts
+ * mid-frame, and libfaad >= 2.11 no longer scans for sync itself
+ * (NeAACDecInit returns success with garbage parameters and every
+ * decode then fails with bytesconsumed=0) -- alignment is OUR job.
+ * Returns byte offset, -1 if none, -2 if a candidate needs more data. */
+static long adts_find_sync(const uint8_t *p, size_t n) {
+    for (size_t i = 0; i + 7 < n; i++) {
+        if (p[i] != 0xFF || (p[i + 1] & 0xF6) != 0xF0) continue;
+        size_t fl = ((size_t)(p[i + 3] & 0x03) << 11)
+                  | ((size_t)p[i + 4] << 3) | (p[i + 5] >> 5);
+        if (fl < 7 || fl > 8192) continue;
+        size_t j = i + fl;
+        if (j + 1 < n) {
+            if (p[j] == 0xFF && (p[j + 1] & 0xF6) == 0xF0) return (long)i;
+        } else return -2;
+    }
+    return -1;
+}
+#endif
 const char *decoder_open_error(void) { return g_open_err; }
 #include <FLAC/stream_decoder.h>
 #define MINIMP3_IMPLEMENTATION
@@ -327,18 +350,21 @@ static long radio_fill_pcm(decoder *d) {
             void *pcm = NeAACDecDecode(d->aac, &fi, d->rin,
                                        (unsigned long)d->rin_len);
             if (fi.error || fi.bytesconsumed == 0) {
-                /* "error" also means "partial frame": when the decode
-                 * loop outruns the network the buffer holds a frame
-                 * fragment, and dropping a byte here corrupts a GOOD
-                 * stream -- one lost frame per buffer-low event, heard
-                 * as crackle at frame cadence. Starving and corrupt are
-                 * different conditions: refill first, and only drop a
-                 * byte when a full frame's worth of data really won't
-                 * decode. */
+                /* Starving and corrupt are different conditions: a
+                 * partial frame must be REFILLED, never trimmed --
+                 * trimming loses a good frame per buffer-low event
+                 * (crackle at frame cadence). Bad bytes are skipped by
+                 * JUMPING to the next validated sync, never by inching
+                 * one byte at a time. */
                 if (d->rin_len >= 4096) {
-                    memmove(d->rin, d->rin + 1, --d->rin_len);
-                    junk++;
-                    continue;
+                    long s = adts_find_sync(d->rin + 1, d->rin_len - 1);
+                    if (s >= 0) {
+                        memmove(d->rin, d->rin + 1 + s,
+                                d->rin_len - 1 - (size_t)s);
+                        d->rin_len -= (size_t)(1 + s);
+                        junk += 1 + s;
+                        continue;
+                    }
                 }
                 long got = radio_read(d->rs, d->rin + d->rin_len,
                                       sizeof d->rin - d->rin_len, 250);
@@ -452,12 +478,42 @@ static int radio_dopen(decoder *d, const char *url) {
      * with layer bits 00) is never valid MPEG audio, so when the bytes
      * say AAC the server's label is simply wrong -- routing such a
      * stream to minimp3 decodes noise. Servers lie; bitstreams don't. */
-    int is_aac = (d->rin_len >= 2 && d->rin[0] == 0xFF &&
+    int is_aac =
+#ifdef HAVE_FAAD
+                 adts_find_sync(d->rin, d->rin_len) >= 0 ||
+#else
+                 (d->rin_len >= 2 && d->rin[0] == 0xFF &&
                   (d->rin[1] & 0xF6) == 0xF0) ||
+#endif
                  (ct && strstr(ct, "aac"));
     if (is_aac) {
 #ifdef HAVE_FAAD
         d->rcodec = 1;
+        /* align to a validated frame boundary before Init: faad 2.11
+         * will not hunt for sync on our behalf */
+        {
+            long t0a = now_mono_ms();
+            long s;
+            while ((s = adts_find_sync(d->rin, d->rin_len)) < 0 &&
+                   now_mono_ms() - t0a < 5000) {
+                if (s == -1 && d->rin_len > 16) {
+                    size_t keep = 8;   /* a sync may straddle the tail */
+                    memmove(d->rin, d->rin + d->rin_len - keep, keep);
+                    d->rin_len = keep;
+                }
+                long got = radio_read(d->rs, d->rin + d->rin_len,
+                                      sizeof d->rin - d->rin_len, 250);
+                if (got > 0) d->rin_len += (size_t)got;
+            }
+            if (s > 0) {
+                memmove(d->rin, d->rin + s, d->rin_len - (size_t)s);
+                d->rin_len -= (size_t)s;
+            } else if (s < 0) {
+                snprintf(g_open_err, sizeof g_open_err,
+                         "AAC stream: no frame sync found");
+                return -1;
+            }
+        }
         d->aac = NeAACDecOpen();
         NeAACDecConfigurationPtr cfg = NeAACDecGetCurrentConfiguration(d->aac);
         cfg->outputFormat = FAAD_FMT_FLOAT;
@@ -500,8 +556,15 @@ static int radio_dopen(decoder *d, const char *url) {
                                            (unsigned long)d->rin_len);
                 tries++;
                 if (fi.error || fi.bytesconsumed == 0) {
-                    if (d->rin_len >= 4096)
-                        memmove(d->rin, d->rin + 1, --d->rin_len);
+                    if (d->rin_len >= 4096) {
+                        long s2 = adts_find_sync(d->rin + 1,
+                                                 d->rin_len - 1);
+                        if (s2 >= 0) {
+                            memmove(d->rin, d->rin + 1 + s2,
+                                    d->rin_len - 1 - (size_t)s2);
+                            d->rin_len -= (size_t)(1 + s2);
+                        }
+                    }
                     continue;   /* short buffer: the loop head refills */
                 }
                 memmove(d->rin, d->rin + fi.bytesconsumed,
