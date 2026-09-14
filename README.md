@@ -199,6 +199,28 @@ the years; prune with `:radio rm`.
     ~/.config/tagplay/playlists/*.m3u saved playlists (portable)
     ~/.config/tagplay/stations        url <TAB> name per line
 
+## tagview
+
+The same machinery, pointed at photographs. `make` builds a second
+binary, `tagview`: the identical query loop -- live count, list,
+selection, `:sel`, grouping, the inspector -- over a photo tree,
+reading EXIF (camera, date, dimensions), IPTC-IIM (keywords, title,
+byline, city), XMP (`dc:subject` et al) and PNG text chunks, merged
+into one multi-valued tag model. Enter shows the cursored image
+full-screen (chafa when installed); `t` inspects the merged tags with
+the image inline. Queries work exactly as in tagplay:
+
+    tag=alps & year<2000 & camera~nikon
+    width>4000 & mpix>10
+    city=Bohinj | tag=lake
+
+tagview links only pcre2 -- none of the audio stack. Caches and
+config live in ~/.cache/tagview and ~/.config/tagview, fully separate
+from the player's. Read-only in this milestone: tag WRITING (the `+`
+key, sidecars for RAW, the polajuice keystroke) is the next one.
+tests/run_view.sh runs the metadata battery against fixtures written
+by exiftool -- an independent implementation checking mine.
+
 ## Source map
 
 The tree is split into shared machinery and the player, ahead of a
