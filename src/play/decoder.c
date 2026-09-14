@@ -489,7 +489,7 @@ static int radio_dopen(decoder *d, const char *url) {
             long t0s = now_mono_ms();
             while (stable < 1 && tries < 24 &&
                    now_mono_ms() - t0s < 5000) {
-                if (d->rin_len < 2048) {
+                if (d->rin_len < 8192) {
                     long got = radio_read(d->rs, d->rin + d->rin_len,
                                           sizeof d->rin - d->rin_len, 250);
                     if (got > 0) d->rin_len += (size_t)got;
