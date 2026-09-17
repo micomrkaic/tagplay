@@ -542,6 +542,10 @@ void console_on_enter(void *ui, struct browser *b, const vec *q, int from_sel) {
     snprintf(b->msg, sizeof b->msg, "playing %zu track%s%s",
              q->len, q->len == 1 ? "" : "s",
              from_sel ? " (selection)" : "");
+    /* the selection is a staging area: once handed to the queue it has
+     * served its purpose, so consume it -- the next Enter plays what's
+     * on screen, not last week's marks */
+    if (from_sel) { b->sel.len = 0; b->sel_view = 0; }
     b->focus = 2;       /* land in the queue view */
     b->qcur = 0;
 }
