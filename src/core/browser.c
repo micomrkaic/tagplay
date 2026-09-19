@@ -412,6 +412,10 @@ static void rerun(browser *st) {
 }
 
 static void redraw(browser *st, size_t prev_count) {
+    /* terminals speaking the kitty graphics protocol (Konsole, kitty)
+     * keep chafa's images as overlays that ESC[2J does NOT remove --
+     * delete them explicitly; other terminals ignore the sequence */
+    printf("\x1b_Ga=d,d=A\x1b\\");
     if (st->focus == 2) {
         if (APP->alt_view) APP->alt_view(st->ui, st);
         else st->focus = 0;
