@@ -441,7 +441,7 @@ static void redraw(browser *st, size_t prev_count) {
         char hdr[256];
         snprintf(hdr, sizeof hdr, "%s — %zu tracks   %s", APP->name, table_len(st->tb),
                  st->focus
-                   ? "LIST: Space toggle · a all · i invert · t tags · c clear · +/- vol · Enter play"
+                   ? "LIST: Space toggle · a all · i invert · t tags · c clear · +/- vol 5% \xc2\xb7 ( ) 1% · Enter play"
                    : "Tab: select tracks · Enter: play · :help");
         printf("%.*s\x1b[K\r\n\x1b[K\r\n", u8clip(hdr, cols - 1), hdr);
     }
@@ -557,8 +557,10 @@ static void show_help(void) {
         "  :load name          load playlist into selection\n"
         "  :lists              show saved playlists    :clear  drop selection\n"
         "  :seek 1:23          seek in current track\n"
-        "  :vol 80             volume percent (0-200)\n"
-        "  :dsp tube 0.4       dsp mode + amount; :dsp off\n"
+        "  :vol 80 | :vol +3    volume, absolute or relative percent\n"
+        "  :dsp tube 0.4       tube tape vinyl shellac am + amount; :dsp off\n"
+        "  :dsp bt 6 -3        bass/treble shelves, dB\n"
+        "  :dsp eq 0 3 6 0 ... graphic EQ, 10 octave bands, dB\n"
         "  :sort f1,-f2        sort results (- = descending)   :sort  clears\n"
         "  :sel                show only the marked tracks, in playlist order,\n"
         "                      for editing (Space unmarks); Enter plays them\n"

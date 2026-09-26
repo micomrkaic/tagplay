@@ -308,8 +308,159 @@ int vinyl_process(double *buf, size_t n, double fs,
 }
 
 /* ====================================================================== */
-/* Tape                                                                   */
+/* AM radio                                                               */
 /* ====================================================================== */
+
+const am_params AM_DEFAULTS = {
+    .bw_hz = 4500.0, .hp_hz = 120.0, .depth = 0.95, .comp = 0.5,
+    .static_per_s = 4.0, .static_db = -36.0, .hiss_db = -55.0,
+    .fade_db = 0.0,
+};
+
+/* Broadcast AM chain, mono by nature (the caller folds channels):
+ * transmitter compression / receiver AGC, envelope detection with
+ * overmodulation fold when depth > 1, the channel + IF band (4th-order
+ * top), atmospheric static crashes (band-limited by riding through the
+ * same filters), post-detector hiss, and optional slow skywave fade.
+ * Broadcast AM is DSB; a "communications" flavor is simply a narrower
+ * bw_hz. No delay line, so no latency to compensate.                  */
+int am_process(double *buf, size_t n, double fs,
+               const am_params *p, double t0)
+{
+    biquad hp, lp1, lp2;
+    bq_design(&hp,  BQ_HIGHPASS, fs, p->hp_hz, 0.7071, 0.0);
+    bq_design(&lp1, BQ_LOWPASS,  fs, p->bw_hz, 0.7071, 0.0);
+    bq_design(&lp2, BQ_LOWPASS,  fs, p->bw_hz, 0.7071, 0.0);
+
+    uint64_t tmix = (uint64_t)(t0 * 1000.0) * 0x100000001b3ULL;
+    uint64_t sseed = 0xa11ceedbadc0ffeeULL ^ tmix;
+    uint64_t hseed = 0xbeefbeefbeef0001ULL ^ tmix;
+    double stg = pow(10.0, p->static_db / 20.0);
+    double hg  = pow(10.0, p->hiss_db / 20.0) * 1.7320508;
+    double pst = p->static_per_s / fs;
+
+    double env = 0.0;
+    double att = exp(-1.0 / (0.005 * fs));
+    double rel = exp(-1.0 / (0.200 * fs));
+    const double REF = 0.25;
+
+    double phf  = fmod(2.0 * M_PI * 0.15 * t0, 2.0 * M_PI);
+    double dphf = 2.0 * M_PI * 0.15 / fs;
+    double m = p->depth > 0.05 ? p->depth : 0.05;
+
+    for (size_t i = 0; i < n; i++) {
+        double x = buf[i];
+
+        /* compression / AGC: downward on loud, gentle lift on quiet,
+         * capped at +12 dB so silence is not noise-pumped              */
+        double a = fabs(x);
+        env = a > env ? att * env + (1 - att) * a
+                      : rel * env + (1 - rel) * a;
+        if (p->comp > 0.0) {
+            double g = pow(REF / (env > 1e-4 ? env : 1e-4), p->comp);
+            if (g > 4.0) g = 4.0;
+            x *= g;
+        }
+
+        /* envelope detection: transparent below 100% modulation,
+         * rectification fold above                                    */
+        double e = 1.0 + m * x;
+        double y = (fabs(e) - 1.0) / m;
+
+        /* atmospheric crash injected pre-filter (band-limits itself)  */
+        if (pst > 0.0 && frand(&sseed) < pst) {
+            double a2 = exp(2.5 * (frand(&sseed) - 1.0));
+            y += 8.0 * stg * a2 * (frand(&sseed) < 0.5 ? -1.0 : 1.0);
+        }
+
+        y = bq_tick(&hp,  y);
+        y = bq_tick(&lp1, y);
+        y = bq_tick(&lp2, y);
+
+        y += hg * frand2(&hseed);
+
+        if (p->fade_db > 0.0) {
+            y *= pow(10.0, (p->fade_db * 0.5 *
+                            (sin(phf) - 1.0)) / 20.0);
+            phf += dphf;
+        }
+        buf[i] = y;
+    }
+    return 0;
+}
+
+/* ====================================================================== */
+/* Shellac 78                                                             */
+/* ====================================================================== */
+
+const shellac_params SHELLAC_DEFAULTS = {
+    .era = 0, .wow_cents = 12.0, .hiss_db = -38.0,
+    .crackle_per_s = 120.0, .crackle_db = -30.0,
+};
+
+/* A 78 rpm shellac disc. Mono by nature (the caller folds channels).
+ * Acoustic era (pre-1925): horn-cut, ~250 Hz - 6 kHz with a mid horn
+ * resonance. Electric era: ~100 Hz - 8 kHz, no horn. Both: 1.3 Hz
+ * eccentricity wow, loud continuous abrasive-filler noise, and dense
+ * crackle. Noise is seeded per-time only (not per-channel): a mono
+ * groove hisses identically into both playback channels.               */
+int shellac_process(double *buf, size_t n, double fs,
+                    const shellac_params *p, double t0)
+{
+    const double WOW_RATE = 78.0 / 60.0;          /* one rev = 1.3 Hz  */
+    double a_wow = mod_amp_samples(p->wow_cents, WOW_RATE, fs);
+
+    dline dl;
+    if (dline_init(&dl, a_wow) != 0) return -1;
+
+    int    acoustic = (p->era == 0);
+    double f_hp = acoustic ? 250.0  : 100.0;
+    double f_lp = acoustic ? 6000.0 : 8000.0;
+    biquad hp, lp1, lp2, horn, crk;
+    bq_design(&hp,   BQ_HIGHPASS, fs, f_hp,   0.7071, 0.0);
+    bq_design(&lp1,  BQ_LOWPASS,  fs, f_lp,   0.7071, 0.0);
+    bq_design(&lp2,  BQ_LOWPASS,  fs, f_lp,   0.7071, 0.0);
+    bq_design(&horn, BQ_PEAK,     fs, 1500.0, 2.2,    acoustic ? 5.0
+                                                               : 0.0);
+    bq_design(&crk,  BQ_BANDPASS, fs, 2500.0, 1.5,    0.0);
+
+    uint64_t tmix = (uint64_t)(t0 * 1000.0) * 0x100000001b3ULL;
+    uint64_t hiss_seed = 0x78787878aa55aa55ULL ^ tmix;
+    uint64_t crk_seed  = 0x78c0ffeec0ffee01ULL ^ tmix;
+    /* frand2 is uniform on [-1,1] (RMS 1/sqrt(3)): normalize so the
+     * hiss_db setting is the actual RMS level                          */
+    double hiss_g = pow(10.0, p->hiss_db / 20.0) * 1.7320508;
+    double crk_g  = pow(10.0, p->crackle_db / 20.0);
+    double pcrk   = p->crackle_per_s / fs;
+
+    double ph  = fmod(2.0 * M_PI * WOW_RATE * t0, 2.0 * M_PI);
+    double dph = 2.0 * M_PI * WOW_RATE / fs;
+
+    for (size_t i = 0; i < n; i++) {
+        double y = dline_tick(&dl, buf[i], a_wow * sin(ph));
+        ph += dph;
+
+        y = bq_tick(&hp,   y);
+        y = bq_tick(&horn, y);
+        y = bq_tick(&lp1,  y);
+        y = bq_tick(&lp2,  y);
+
+        /* abrasive shellac filler: loud, white-ish, continuous       */
+        y += hiss_g * frand2(&hiss_seed);
+
+        double imp = 0.0;
+        if (pcrk > 0.0 && frand(&crk_seed) < pcrk) {
+            double a = exp(3.0 * (frand(&crk_seed) - 1.0));
+            imp = crk_g * a * (frand(&crk_seed) < 0.5 ? -1.0 : 1.0);
+        }
+        y += bq_tick(&crk, imp);
+
+        buf[i] = y;
+    }
+    dline_compensate(buf, n, &dl);
+    free(dl.buf);
+    return 0;
+}
 
 int tape_process(double *buf, size_t n, double fs,
                  const tape_params *p, unsigned channel, double t0)

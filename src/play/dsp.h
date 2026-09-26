@@ -38,6 +38,11 @@ void dsp_on_format(dsp_chain *c, int rate, int channels);
 
 /* mode: "off", "tube", ... ; amount in [0,1]. Returns 0 if mode known. */
 int  dsp_set_mode(dsp_chain *c, const char *mode, double amount);
+/* graphic EQ: up to 10 gains in dB on the ISO octave bands
+ * 31.5..16k; fewer than 10 = the rest flat. Switches mode to "eq". */
+int  dsp_set_eq(dsp_chain *c, const double *db, int n);
+/* tone dials: low shelf 120 Hz / high shelf 8 kHz, +-12 dB */
+int  dsp_set_tone(dsp_chain *c, double bass_db, double treble_db);
 const char *dsp_mode_name(const dsp_chain *c);
 
 /* in-place on interleaved float32 */

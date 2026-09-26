@@ -53,7 +53,8 @@
 #define PR_SHAPE   2048      /* shaper-only: little more than FIR warmup */
 #define HEADROOM   0.708     /* -3 dB: hot masters + harmonics headroom  */
 
-typedef enum { M_OFF, M_TUBE, M_TAPE, M_VINYL } dsp_mode;
+typedef enum { M_OFF, M_TUBE, M_TAPE, M_VINYL, M_SHELLAC,
+               M_AM, M_EQ, M_TONE } dsp_mode;
 
 struct dsp_chain {
     pthread_mutex_t mu;
@@ -64,10 +65,15 @@ struct dsp_chain {
     int      rate, channels;
 
     /* audiotard stage parameters, derived from mode+amount */
-    int          use_shape, use_tape, use_vinyl, os;
-    ws_params    wsp;
-    tape_params  tp;
-    vinyl_params vp;
+    int          use_shape, use_tape, use_vinyl, use_shellac, use_am;
+    int          use_eq, use_tone, os;
+    ws_params      wsp;
+    tape_params    tp;
+    vinyl_params   vp;
+    shellac_params shp;
+    am_params      ap;
+    double eq_db[10];              /* ISO octave bands, dB              */
+    double bass_db, treble_db;
 
     /* ---- streaming pipeline (absolute frame positions) ---- */
     double  *clean;          /* interleaved history, clean[0] = frame cbase */
@@ -133,6 +139,7 @@ static void derive_params(dsp_chain *c) {
     double s = 2.0 * c->amount;              /* 1.0 at the defaults      */
     double sdb = s > 0.001 ? 20.0 * log10(s) : -120.0;
     c->use_shape = c->use_tape = c->use_vinyl = 0;
+    c->use_shellac = c->use_am = c->use_eq = c->use_tone = 0;
     switch (c->mode) {
     case M_TUBE:
         c->use_shape = 1;
@@ -158,9 +165,68 @@ static void derive_params(dsp_chain *c) {
         c->vp.crackle_db += sdb;
         c->vp.hiss_db    += sdb;
         break;
+    case M_SHELLAC:
+        c->use_shellac = 1;
+        c->shp = SHELLAC_DEFAULTS;
+        c->shp.era = s > 1.2 ? 0 : 1;    /* crank it into the horn era */
+        c->shp.wow_cents     *= s;
+        c->shp.crackle_per_s *= s;
+        c->shp.crackle_db += sdb;
+        c->shp.hiss_db    += sdb;
+        break;
+    case M_AM:
+        c->use_am = 1;
+        c->ap = AM_DEFAULTS;
+        c->ap.depth = 0.80 + 0.30 * s;   /* > 1.0: overmodulation fold */
+        c->ap.comp  = 0.35 * s;
+        if (c->ap.comp > 1.0) c->ap.comp = 1.0;
+        c->ap.static_per_s *= s;
+        c->ap.static_db += sdb;
+        c->ap.hiss_db   += sdb;
+        c->ap.fade_db = c->amount > 0.7 ? 10.0 * (c->amount - 0.7) : 0.0;
+        break;
+    case M_EQ:   c->use_eq = 1; break;   /* bands set via dsp_set_eq   */
+    case M_TONE: c->use_tone = 1; break; /* dials via dsp_set_tone     */
     default:
         break;
     }
+}
+
+/* the ten ISO octave centers of a classic graphic equalizer */
+static const double EQ_FREQ[10] = {
+    31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000
+};
+
+int dsp_set_eq(dsp_chain *c, const double *db, int n) {
+    pthread_mutex_lock(&c->mu);
+    if (c->mode != M_EQ) pipeline_reset(c);
+    c->mode = M_EQ;
+    for (int i = 0; i < 10; i++) {
+        double g = i < n ? db[i] : 0.0;
+        if (g > 18) g = 18;
+        if (g < -18) g = -18;
+        c->eq_db[i] = g;
+    }
+    derive_params(c);
+    c->gain_set = 0;
+    pthread_mutex_unlock(&c->mu);
+    return 0;
+}
+
+int dsp_set_tone(dsp_chain *c, double bass_db, double treble_db) {
+    pthread_mutex_lock(&c->mu);
+    if (c->mode != M_TONE) pipeline_reset(c);
+    c->mode = M_TONE;
+    if (bass_db > 12) bass_db = 12;
+    if (bass_db < -12) bass_db = -12;
+    if (treble_db > 12) treble_db = 12;
+    if (treble_db < -12) treble_db = -12;
+    c->bass_db = bass_db;
+    c->treble_db = treble_db;
+    derive_params(c);
+    c->gain_set = 0;
+    pthread_mutex_unlock(&c->mu);
+    return 0;
 }
 
 int dsp_set_mode(dsp_chain *c, const char *mode, double amount) {
@@ -171,6 +237,8 @@ int dsp_set_mode(dsp_chain *c, const char *mode, double amount) {
     else if (!strcmp(mode, "tube"))  m = M_TUBE;
     else if (!strcmp(mode, "tape"))  m = M_TAPE;
     else if (!strcmp(mode, "vinyl")) m = M_VINYL;
+    else if (!strcmp(mode, "shellac")) m = M_SHELLAC;
+    else if (!strcmp(mode, "am"))    m = M_AM;
     else return -1;
     pthread_mutex_lock(&c->mu);
     if (m != c->mode) pipeline_reset(c);
@@ -186,6 +254,10 @@ const char *dsp_mode_name(const dsp_chain *c) {
     case M_TUBE:  return "tube";
     case M_TAPE:  return "tape";
     case M_VINYL: return "vinyl";
+    case M_SHELLAC: return "shellac";
+    case M_AM:    return "am";
+    case M_EQ:    return "eq";
+    case M_TONE:  return "tone";
     default:      return "off";
     }
 }
@@ -240,7 +312,8 @@ static void outq_push(dsp_chain *c, const double *frames_in, size_t nframes) {
 static int render_block(dsp_chain *c) {
     int ch = c->channels;
     double fs = (double)c->rate;
-    uint64_t pr = (c->use_tape || c->use_vinyl) ? PR_MEDIA : PR_SHAPE;
+    uint64_t pr = (c->use_tape || c->use_vinyl ||
+                   c->use_shellac || c->use_am) ? PR_MEDIA : PR_SHAPE;
     uint64_t pre  = c->t > pr ? c->t - pr : 0;
     if (pre < c->cbase) pre = c->cbase;
     uint64_t endr = c->t + B_FRAMES + X_FRAMES + PAD_FRAMES;
@@ -274,6 +347,35 @@ static int render_block(dsp_chain *c) {
         if (c->use_vinyl &&
             vinyl_process(c->chan, span, fs, &c->vp, (unsigned)cc, t0))
             return -1;
+        if (c->use_shellac &&
+            shellac_process(c->chan, span, fs, &c->shp, t0))
+            return -1;   /* noise is time-seeded: both channels hiss
+                          * identically, as one mono groove should */
+        if (c->use_am &&
+            am_process(c->chan, span, fs, &c->ap, t0))
+            return -1;
+        if (c->use_tone) {   /* audiotard's tone dials, verbatim spec */
+            biquad q;
+            if (fabs(c->bass_db) > 0.01) {
+                bq_design(&q, BQ_LOWSHELF, fs, 120.0, 0.7071, c->bass_db);
+                bq_process(&q, c->chan, span);
+            }
+            if (fabs(c->treble_db) > 0.01) {
+                bq_design(&q, BQ_HIGHSHELF, fs, 8000.0, 0.7071,
+                          c->treble_db);
+                bq_process(&q, c->chan, span);
+            }
+        }
+        if (c->use_eq) {
+            biquad q;
+            for (int b = 0; b < 10; b++) {
+                if (fabs(c->eq_db[b]) < 0.01) continue;
+                if (EQ_FREQ[b] > 0.45 * fs) continue;
+                bq_design(&q, BQ_PEAK, fs, EQ_FREQ[b], 1.414,
+                          c->eq_db[b]);
+                bq_process(&q, c->chan, span);
+            }
+        }
         for (size_t i = 0; i < span; i++)
             c->rbuf[i * (size_t)ch + cc] = c->chan[i];
     }
@@ -281,6 +383,13 @@ static int render_block(dsp_chain *c) {
     size_t off = (size_t)(c->t - pre) * (size_t)ch;   /* emit offset */
     size_t nem = B_FRAMES * (size_t)ch;
 
+    if (!c->gain_set && (c->use_eq || c->use_tone)) {
+        /* an equalizer's level change IS its function: RMS-matching a
+         * +9 dB bass shelf would cancel it into an overall cut. Match
+         * audiotard's chain: no normalization around tone/EQ. */
+        c->match_gain = 1.0;
+        c->gain_set = 1;
+    }
     if (!c->gain_set) { /* once: match block RMS to clean, minus headroom */
         const double *cl = c->clean + (size_t)(c->t - c->cbase) * (size_t)ch;
         double rs = 0, ro = 0;

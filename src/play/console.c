@@ -485,8 +485,11 @@ int console_alt_key(void *ui, struct browser *b, int c) {
             player_move(u->pl, b->qcur, b->qcur - 1);
             b->qcur--;
         }
-    } else if (c == '+' || c == '=' || c == '-') {
-        double g = dsp_gain(player_dsp(u->pl)) + (c == '-' ? -0.05 : 0.05);
+    } else if (c == '+' || c == '=' || c == '-' ||
+               c == '(' || c == ')') {
+        double step = (c == '(' || c == ')') ? 0.01 : 0.05;
+        double g = dsp_gain(player_dsp(u->pl))
+                 + ((c == '-' || c == '(') ? -step : step);
         dsp_set_gain(player_dsp(u->pl), g);
         u->mute_saved = 0;
         snprintf(b->msg, sizeof b->msg, "vol: %d%%",
@@ -511,8 +514,10 @@ int console_global_key(void *ui, struct browser *b, int c) {
     if (c == 16) { player_toggle_pause(u->pl); return 1; }   /* ctrl-p */
     if (c == 14) { player_next(u->pl); return 1; }           /* ctrl-n */
     if (c == 2)  { player_prev(u->pl); return 1; }           /* ctrl-b */
-    if (c == '+' || c == '=' || c == '-') {
-        double g = dsp_gain(player_dsp(u->pl)) + (c == '-' ? -0.05 : 0.05);
+    if (c == '+' || c == '=' || c == '-' || c == '(' || c == ')') {
+        double step = (c == '(' || c == ')') ? 0.01 : 0.05;
+        double g = dsp_gain(player_dsp(u->pl))
+                 + ((c == '-' || c == '(') ? -step : step);
         dsp_set_gain(player_dsp(u->pl), g);
         u->mute_saved = 0;
         snprintf(b->msg, sizeof b->msg, "vol: %d%%",
@@ -568,7 +573,10 @@ int console_command(void *ui, struct browser *b, const char *cmd) {
         const char *a = cmd + 3;
         while (*a == ' ') a++;
         if (*a) {
-            dsp_set_gain(player_dsp(u->pl), atof(a) / 100.0);
+            double v = atof(a) / 100.0;
+            if (*a == '+' || *a == '-')   /* :vol +3 / :vol -1 */
+                v += dsp_gain(player_dsp(u->pl));
+            dsp_set_gain(player_dsp(u->pl), v);
             u->mute_saved = 0;
         }
         snprintf(b->msg, sizeof b->msg, "vol: %d%%",
@@ -619,8 +627,46 @@ int console_command(void *ui, struct browser *b, const char *cmd) {
     if (!strncmp(cmd, "dsp", 3)) {
         char name[32];
         double amt = 0.5;
-        if (sscanf(cmd + 3, "%31s %lf", name, &amt) >= 1)
-            dsp_set_mode(player_dsp(u->pl), name, amt);
+        int got = sscanf(cmd + 3, "%31s %lf", name, &amt);
+        if (got < 1) {
+            snprintf(b->msg, sizeof b->msg,
+                     "dsp: off tube tape vinyl shellac am [0..1] | "
+                     "bt BASS TREBLE | eq g1..g10 (dB)");
+            return 1;
+        }
+        if (!strcmp(name, "eq")) {
+            double g[10] = { 0 };
+            int n = 0;
+            const char *p = cmd + 3;
+            while (*p == ' ') p++;
+            p += 2;                       /* past "eq" */
+            char *end;
+            while (n < 10) {
+                double v = strtod(p, &end);
+                if (end == p) break;
+                g[n++] = v;
+                p = end;
+            }
+            dsp_set_eq(player_dsp(u->pl), g, n);
+            snprintf(b->msg, sizeof b->msg, "eq: %d band%s set",
+                     n, n == 1 ? "" : "s");
+            return 1;
+        }
+        if (!strcmp(name, "bt") || !strcmp(name, "tone")) {
+            double bass = 0, treb = 0;
+            if (sscanf(cmd + 3, "%*s %lf %lf", &bass, &treb) < 1) {
+                snprintf(b->msg, sizeof b->msg,
+                         "usage: :dsp bt BASS_DB TREBLE_DB");
+                return 1;
+            }
+            dsp_set_tone(player_dsp(u->pl), bass, treb);
+            snprintf(b->msg, sizeof b->msg,
+                     "tone: bass %+.1f dB, treble %+.1f dB", bass, treb);
+            return 1;
+        }
+        if (dsp_set_mode(player_dsp(u->pl), name, amt))
+            snprintf(b->msg, sizeof b->msg,
+                     "no such dsp mode: %s", name);
         return 1;
     }
     return 0;
