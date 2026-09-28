@@ -29,7 +29,12 @@
 
 typedef enum { CMD_NONE, CMD_PLAY, CMD_NEXT, CMD_PREV, CMD_STOP, CMD_SEEK, CMD_JUMP } cmd_t;
 
+#define VIZ_N 8192
+
 struct player {
+    float  viz_clean[VIZ_N], viz_proc[VIZ_N];
+    size_t viz_w;            /* frame write cursor (wraps) */
+    int    viz_rate;
     const table *tb;
     dsp_chain   *dsp;
 
@@ -154,6 +159,37 @@ static void out_close(player *p) {
 }
 
 /* ---- audio thread ---- */
+/* mono-mix into the viz rings; single writer (the audio thread) */
+static void viz_deposit(player *p, const float *buf, long frames,
+                        int ch, int proc) {
+    float *ring = proc ? p->viz_proc : p->viz_clean;
+    size_t w = p->viz_w;
+    if (ch < 1) ch = 1;
+    for (long f = 0; f < frames; f++) {
+        float s = 0.0f;
+        for (int k = 0; k < ch; k++) s += buf[f * ch + k];
+        ring[w % VIZ_N] = s / (float)ch;
+        w++;
+    }
+    if (proc) {                 /* publish once per clean/proc pair */
+        p->viz_w = w;
+        p->viz_rate = p->rate;
+    }
+}
+
+int player_viz(player *p, float *clean, float *proc, int n) {
+    if (n > VIZ_N) n = VIZ_N;
+    size_t w = p->viz_w;        /* racy read: a frame of skew is fine */
+    int rate = p->viz_rate;
+    if (!rate) return 0;
+    for (int i = 0; i < n; i++) {
+        size_t j = (w + VIZ_N - (size_t)n + (size_t)i) % VIZ_N;
+        if (clean) clean[i] = p->viz_clean[j];
+        if (proc)  proc[i]  = p->viz_proc[j];
+    }
+    return rate;
+}
+
 static void *audio_main(void *arg) {
     player *p = arg;
     float *buf = xmalloc(sizeof(float) * CHUNK_FRAMES * 8);
@@ -256,7 +292,9 @@ static void *audio_main(void *arg) {
         pthread_mutex_unlock(&p->mu);
         long n = decoder_read(dec, buf, CHUNK_FRAMES);
         if (n > 0) {
+            viz_deposit(p, buf, n, p->channels, 0);
             dsp_process(p->dsp, buf, n);
+            viz_deposit(p, buf, n, p->channels, 1);
             out_write(p, buf, n);
         } else if (n == DECODER_AGAIN) {
             /* live stream buffering: keep cadence with silence */

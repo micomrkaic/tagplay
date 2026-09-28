@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "track.h"
 #include "scan.h"
 #include "cache.h"
@@ -44,6 +45,8 @@
 #include "tags.h"
 #include "console.h"
 #include "stb_image.h"
+#include "viz.h"
+#include "fft.h"
 #include "font8x8.h"
 
 #define WIN_W 1100
@@ -65,7 +68,26 @@ typedef struct {
     int      art_w, art_h;
     SDL_Rect seek_r, vol_r, btn_prev, btn_play, btn_next, btn_stop;
     int      list_top, row_h;
+    /* ---- instrument panel (MG-c) ---- */
+    viz      v;
+    int      instr_on;       /* F2 */
+    float    tap_c[8192], tap_p[8192];
+    int      tap_rate;
+    SDL_Rect wf_r, sp_r, fx_r;
+    SDL_Rect fx_btn[8];
+    SDL_Rect fx_sl[12];      /* live slider rects this frame */
+    int      fx_sl_n;
+    int      fx_mode;        /* index into fx_names */
+    float    fx_amt[8];      /* remembered amount per mode */
+    double   eq_db[10];
+    double   bass_db, treble_db;
+    int      drag;           /* 0 none, 1 vol, 2 seek, 3 wf, 10+i fx */
 } gui;
+
+static const char *const fx_names[8] =
+    { "off", "tube", "tape", "vinyl", "shellac", "am", "eq", "tone" };
+static const char *const eq_lbl[10] =
+    { "31", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
 
 static void draw_char(SDL_Renderer *r, int x, int y, unsigned char c,
                       SDL_Color col) {
@@ -133,6 +155,145 @@ static void overlay_load_art(gui *g, size_t ti) {
         g->art_h = h;
     }
     stbi_image_free(px);
+}
+
+/* ---- effects panel plumbing ---- */
+
+static void fx_apply(gui *g) {
+    dsp_chain *c = player_dsp(g->pl);
+    const char *m = fx_names[g->fx_mode];
+    if (g->fx_mode == 6)      dsp_set_eq(c, g->eq_db, 10);
+    else if (g->fx_mode == 7) dsp_set_tone(c, g->bass_db, g->treble_db);
+    else                      dsp_set_mode(c, m, g->fx_amt[g->fx_mode]);
+}
+
+static void slider(gui *g, SDL_Rect r, const char *lbl, double frac,
+                   char *vtxt) {
+    draw_text(g->r, r.x, r.y - 2, lbl, DIM);
+    SDL_Rect tr = { r.x + 5 * CW, r.y + CH / 2 - 2, r.w - 5 * CW - 7 * CW,
+                    6 };
+    fill(g->r, tr, ROW);
+    SDL_Rect f = tr;
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    f.w = (int)(tr.w * frac);
+    fill(g->r, f, ACC);
+    if (vtxt) draw_text(g->r, tr.x + tr.w + CW, r.y - 2, vtxt, FG);
+    g->fx_sl[g->fx_sl_n] = tr;
+    g->fx_sl_n++;
+}
+
+static double slider_frac(SDL_Rect tr, int mx) {
+    double f = (mx - tr.x) / (double)tr.w;
+    return f < 0 ? 0 : f > 1 ? 1 : f;
+}
+
+static void draw_instruments(gui *g, const player_status *ps) {
+    SDL_Renderer *r = g->r;
+    int pad = 10;
+
+    /* waveform strip: full-file peaks, played part accented */
+    fill(r, g->wf_r, (SDL_Color){ 22, 22, 28, 255 });
+    int mid = g->wf_r.y + g->wf_r.h / 2;
+    double played = (ps->playing && ps->dur > 0)
+                  ? ps->pos / ps->dur : -1.0;
+    for (int i = 0; i < g->v.pk_filled; i++) {
+        int x = g->wf_r.x + i * g->wf_r.w / VIZ_PK;
+        int y0 = mid - (int)(g->v.pkmax[i] * (g->wf_r.h / 2 - 2));
+        int y1 = mid - (int)(g->v.pkmin[i] * (g->wf_r.h / 2 - 2));
+        SDL_Color c = (played >= 0 &&
+                       i < (int)(played * VIZ_PK)) ? ACC : DIM;
+        SDL_SetRenderDrawColor(r, c.r, c.g, c.b, 255);
+        SDL_RenderDrawLine(r, x, y0, x, y1);
+    }
+    if (!g->v.pk_filled)
+        draw_text(r, g->wf_r.x + pad, mid - CH / 2,
+                  ps->playing ? "(stream: no waveform)" : "(idle)",
+                  DIM);
+    if (played >= 0) {
+        int cx = g->wf_r.x + (int)(played * g->wf_r.w);
+        SDL_SetRenderDrawColor(r, HL.r, HL.g, HL.b, 255);
+        SDL_RenderDrawLine(r, cx, g->wf_r.y, cx,
+                           g->wf_r.y + g->wf_r.h);
+    }
+
+    /* spectrum: clean (dim) under processed (accent), log-x, 0..-90 dB */
+    fill(r, g->sp_r, (SDL_Color){ 22, 22, 28, 255 });
+    if (g->v.sp_primed && g->tap_rate > 0) {
+        double f_lo = 30.0, f_hi = g->tap_rate / 2.0;
+        double lr = log(f_hi / f_lo);
+        int px_last_c = -1, py_last_c = 0, px_last_p = -1,
+            py_last_p = 0;
+        for (int i = 1; i < VIZ_FFT / 2; i++) {
+            double fq = (double)i * g->tap_rate / VIZ_FFT;
+            if (fq < f_lo) continue;
+            int x = g->sp_r.x +
+                    (int)(log(fq / f_lo) / lr * g->sp_r.w);
+            double dbc = 10.0 * log10(g->v.sp_clean[i] + 1e-12);
+            double dbp = 10.0 * log10(g->v.sp_proc[i] + 1e-12);
+            int yc = g->sp_r.y +
+                     (int)((0.0 - dbc) / 90.0 * g->sp_r.h);
+            int yp = g->sp_r.y +
+                     (int)((0.0 - dbp) / 90.0 * g->sp_r.h);
+            if (yc < g->sp_r.y) yc = g->sp_r.y;
+            if (yc > g->sp_r.y + g->sp_r.h)
+                yc = g->sp_r.y + g->sp_r.h;
+            if (yp < g->sp_r.y) yp = g->sp_r.y;
+            if (yp > g->sp_r.y + g->sp_r.h)
+                yp = g->sp_r.y + g->sp_r.h;
+            if (px_last_c >= 0) {
+                SDL_SetRenderDrawColor(r, DIM.r, DIM.g, DIM.b, 255);
+                SDL_RenderDrawLine(r, px_last_c, py_last_c, x, yc);
+            }
+            if (px_last_p >= 0) {
+                SDL_SetRenderDrawColor(r, ACC.r, ACC.g, ACC.b, 255);
+                SDL_RenderDrawLine(r, px_last_p, py_last_p, x, yp);
+            }
+            px_last_c = x; py_last_c = yc;
+            px_last_p = x; py_last_p = yp;
+        }
+    } else
+        draw_text(r, g->sp_r.x + pad, g->sp_r.y + g->sp_r.h / 2,
+                  "(spectrum: play something)", DIM);
+
+    /* effects: mode buttons + the active mode's controls */
+    fill(r, g->fx_r, (SDL_Color){ 20, 20, 26, 255 });
+    const char *live = dsp_mode_name(player_dsp(g->pl));
+    int bw = g->fx_r.w / 4 - 6;
+    for (int i = 0; i < 8; i++) {
+        int row = i / 4, col = i % 4;
+        g->fx_btn[i] = (SDL_Rect){ g->fx_r.x + 4 + col * (bw + 6),
+                                   g->fx_r.y + 4 + row * (CH + 12),
+                                   bw, CH + 8 };
+        int active = !strcmp(live, fx_names[i]);
+        fill(r, g->fx_btn[i], active ? ROW : (SDL_Color){ 26, 26, 34,
+                                                          255 });
+        draw_text(r, g->fx_btn[i].x + 6, g->fx_btn[i].y + 4,
+                  fx_names[i], active ? HL : FG);
+    }
+    int sy = g->fx_r.y + 2 * (CH + 12) + 10;
+    g->fx_sl_n = 0;
+    char vt[24];
+    if (g->fx_mode >= 1 && g->fx_mode <= 5) {
+        snprintf(vt, sizeof vt, "%.2f", g->fx_amt[g->fx_mode]);
+        slider(g, (SDL_Rect){ g->fx_r.x + 6, sy, g->fx_r.w - 12, CH },
+               "amt", g->fx_amt[g->fx_mode], vt);
+    } else if (g->fx_mode == 6) {
+        for (int i = 0; i < 10; i++) {
+            snprintf(vt, sizeof vt, "%+.0f", g->eq_db[i]);
+            slider(g, (SDL_Rect){ g->fx_r.x + 6, sy + i * (CH + 4),
+                                  g->fx_r.w - 12, CH },
+                   eq_lbl[i], (g->eq_db[i] + 18.0) / 36.0, vt);
+        }
+    } else if (g->fx_mode == 7) {
+        snprintf(vt, sizeof vt, "%+.0f", g->bass_db);
+        slider(g, (SDL_Rect){ g->fx_r.x + 6, sy, g->fx_r.w - 12, CH },
+               "bass", (g->bass_db + 12.0) / 24.0, vt);
+        snprintf(vt, sizeof vt, "%+.0f", g->treble_db);
+        slider(g, (SDL_Rect){ g->fx_r.x + 6, sy + CH + 6,
+                              g->fx_r.w - 12, CH },
+               "treb", (g->treble_db + 12.0) / 24.0, vt);
+    }
 }
 
 static void frame(gui *g) {
@@ -217,7 +378,8 @@ static void frame(gui *g) {
               g->b.m.parse_ok ? DIM : HL);
 
     int top = pad + CH + 14;
-    int bot = g->h - 4 * CH - 26;
+    int instr_h = g->instr_on ? 56 + 150 + 12 : 0;
+    int bot = g->h - 4 * CH - 26 - instr_h;
     g->list_top = top;
     g->row_h = CH + 6;
     int rows = (bot - top) / g->row_h;
@@ -296,6 +458,16 @@ static void frame(gui *g) {
                       DIM);
             y += g->row_h;
         }
+    }
+
+    if (g->instr_on) {
+        int iy = g->h - 4 * CH - 14 - instr_h + 4;
+        g->wf_r = (SDL_Rect){ pad, iy, g->w - 2 * pad, 56 };
+        int sw = (g->w - 2 * pad) * 58 / 100;
+        g->sp_r = (SDL_Rect){ pad, iy + 60, sw, 146 };
+        g->fx_r = (SDL_Rect){ pad + sw + 8, iy + 60,
+                              g->w - 2 * pad - sw - 8, 146 };
+        draw_instruments(g, &ps);
     }
 
     int ty = g->h - 4 * CH - 14;
@@ -414,6 +586,43 @@ static void handle(gui *g, const SDL_Event *e) {
         else if (k == SDLK_HOME) key(g, K_HOME);
         else if (k == SDLK_END) key(g, K_END);
         else if (k == SDLK_DELETE) key(g, K_DEL);
+        else if (k == SDLK_F2) g->instr_on = !g->instr_on;
+        break;
+    }
+    case SDL_MOUSEBUTTONUP:
+        g->drag = 0;
+        break;
+    case SDL_MOUSEMOTION: {
+        if (!g->drag) break;
+        int mx = e->motion.x;
+        if (g->drag == 1)
+            dsp_set_gain(player_dsp(g->pl),
+                         2.0 * (mx - g->vol_r.x) /
+                         (double)g->vol_r.w);
+        else if (g->drag == 3) {
+            player_status ps;
+            player_get_status(g->pl, &ps);
+            if (ps.playing && ps.dur > 0) {
+                double f = (mx - g->wf_r.x) / (double)g->wf_r.w;
+                if (f < 0) f = 0;
+                if (f > 1) f = 1;
+                player_seek(g->pl, ps.dur * f);
+            }
+        } else if (g->drag >= 10) {
+            int i = g->drag - 10;
+            if (i < g->fx_sl_n) {
+                double f = slider_frac(g->fx_sl[i], mx);
+                if (g->fx_mode >= 1 && g->fx_mode <= 5)
+                    g->fx_amt[g->fx_mode] = (float)f;
+                else if (g->fx_mode == 6)
+                    g->eq_db[i] = f * 36.0 - 18.0;
+                else if (g->fx_mode == 7) {
+                    if (i == 0) g->bass_db = f * 24.0 - 12.0;
+                    else        g->treble_db = f * 24.0 - 12.0;
+                }
+                fx_apply(g);
+            }
+        }
         break;
     }
     case SDL_MOUSEWHEEL:
@@ -430,7 +639,39 @@ static void handle(gui *g, const SDL_Event *e) {
         int mx = e->button.x, my = e->button.y;
         SDL_Point p = { mx, my };
         if (g->overlay) { g->overlay = 0; break; }
-        if (SDL_PointInRect(&p, &g->btn_play))
+        if (g->instr_on && SDL_PointInRect(&p, &g->wf_r)) {
+            player_status ps;
+            player_get_status(g->pl, &ps);
+            if (ps.playing && ps.dur > 0)
+                player_seek(g->pl, ps.dur * (mx - g->wf_r.x) /
+                                   (double)g->wf_r.w);
+            g->drag = 3;
+        } else if (g->instr_on && SDL_PointInRect(&p, &g->fx_r)) {
+            for (int i = 0; i < 8; i++)
+                if (SDL_PointInRect(&p, &g->fx_btn[i])) {
+                    g->fx_mode = i;
+                    fx_apply(g);
+                    return;
+                }
+            for (int i = 0; i < g->fx_sl_n; i++)
+                if (mx >= g->fx_sl[i].x - CW &&
+                    mx <= g->fx_sl[i].x + g->fx_sl[i].w + CW &&
+                    my >= g->fx_sl[i].y - 6 &&
+                    my <= g->fx_sl[i].y + g->fx_sl[i].h + 6) {
+                    g->drag = 10 + i;
+                    double f = slider_frac(g->fx_sl[i], mx);
+                    if (g->fx_mode >= 1 && g->fx_mode <= 5)
+                        g->fx_amt[g->fx_mode] = (float)f;
+                    else if (g->fx_mode == 6)
+                        g->eq_db[i] = f * 36.0 - 18.0;
+                    else if (g->fx_mode == 7) {
+                        if (i == 0) g->bass_db = f * 24.0 - 12.0;
+                        else        g->treble_db = f * 24.0 - 12.0;
+                    }
+                    fx_apply(g);
+                    return;
+                }
+        } else if (SDL_PointInRect(&p, &g->btn_play))
             key(g, g->b.focus == 2 ? ' ' : 16);
         else if (SDL_PointInRect(&p, &g->btn_next)) key(g, 14);
         else if (SDL_PointInRect(&p, &g->btn_prev)) key(g, 2);
@@ -448,6 +689,7 @@ static void handle(gui *g, const SDL_Event *e) {
             dsp_set_gain(player_dsp(g->pl),
                          2.0 * (mx - g->vol_r.x) /
                          (double)g->vol_r.w);
+            g->drag = 1;
         } else if (my >= g->list_top && g->b.focus != 2) {
             const vec *shown = bmodel_shown(&g->b.m);
             int y = g->list_top;
@@ -497,6 +739,22 @@ static void tick(gui *g) {
         APP->poll_msg(g->b.ui, g->b.msg, sizeof g->b.msg);
     if (g->b.focus == 2 && APP->alt_snapshot)
         APP->alt_snapshot(g->b.ui, &g->b);
+    player_status ps;
+    player_get_status(g->pl, &ps);
+    if (ps.playing && ps.track_index < table_len(g->tb)) {
+        const track *t = table_at(g->tb, ps.track_index);
+        if (t->duration > 0)
+            viz_want_peaks(&g->v, g->tb, ps.track_index);
+        else if (g->v.pk_track != (long)ps.track_index) {
+            viz_no_peaks(&g->v);
+            g->v.pk_track = (long)ps.track_index;
+        }
+    }
+    int rate = player_viz(g->pl, g->tap_c, g->tap_p, VIZ_FFT);
+    if (rate > 0) {
+        g->tap_rate = rate;
+        viz_fold_spectrum(&g->v, g->tap_c, g->tap_p, VIZ_FFT);
+    }
 }
 
 /* ---- selftest ---- */
@@ -586,6 +844,77 @@ static int selftest(gui *g) {
     push_key(SDLK_ESCAPE, 0);
     pump(g);
     CHK("overlay dismissed", g->overlay == 0);
+    /* ---- MG-c instruments ---- */
+    {
+        /* fft sanity: 1 kHz sine at 48 kHz peaks in the right bin */
+        static double x[VIZ_FFT], db[VIZ_FFT / 2];
+        for (int i = 0; i < VIZ_FFT; i++)
+            x[i] = sin(2.0 * M_PI * 1000.0 * i / 48000.0);
+        fft_spectrum_db(x, VIZ_FFT, db);
+        int mx = 1;
+        for (int i = 2; i < VIZ_FFT / 2; i++)
+            if (db[i] > db[mx]) mx = i;
+        double fpk = (double)mx * 48000.0 / VIZ_FFT;
+        CHK("fft: 1 kHz sine lands on 1 kHz",
+            fpk > 950.0 && fpk < 1050.0 && db[mx] > -3.0);
+    }
+    {
+        /* live tap: something in the rings while playing */
+        SDL_Delay(400);
+        tick(g);
+        int rate = g->tap_rate;
+        double e = 0;
+        for (int i = 0; i < VIZ_FFT; i++)
+            e += g->tap_p[i] * g->tap_p[i];
+        CHK("viz tap alive during playback", rate > 0 && e > 1e-6);
+        /* am at full strength: processed must differ from clean.
+         * The fixtures are one second long, so restart the current
+         * queue entry (Enter in the queue view) and set the mode
+         * through the panel, then wait for fresh frames. */
+        g->fx_mode = 5;                     /* am */
+        g->fx_amt[5] = 1.0f;
+        fx_apply(g);
+        push_key(SDLK_RETURN, 0);           /* queue view: jump/restart */
+        pump(g);
+        double d = 0;
+        int dwait = 0;
+        while (d < 1e-6 && dwait < 4000) {
+            SDL_Delay(100);
+            dwait += 100;
+            tick(g);
+            d = 0;
+            for (int i = 0; i < VIZ_FFT; i++) {
+                double t = g->tap_p[i] - g->tap_c[i];
+                d += t * t;
+            }
+        }
+        CHK("clean vs processed diverge under am", d > 1e-6);
+        /* full-file peaks build for a real file */
+        player_status ps;
+        player_get_status(g->pl, &ps);
+        int waited = 0;
+        while (g->v.pk_filled < 4 && waited < 4000) {
+            tick(g);
+            SDL_Delay(50);
+            waited += 50;
+        }
+        float pkm = 0;
+        for (int i = 0; i < g->v.pk_filled; i++)
+            if (g->v.pkmax[i] > pkm) pkm = g->v.pkmax[i];
+        CHK("waveform peaks built in background",
+            g->v.pk_filled >= 4 && pkm > 0.01f);
+        /* effect panel state drives the real chain */
+        g->fx_mode = 6;
+        g->eq_db[0] = 9.0;
+        fx_apply(g);
+        CHK("eq panel drives dsp",
+            !strcmp(dsp_mode_name(player_dsp(g->pl)), "eq"));
+        push_key(SDLK_F2, 0);
+        pump(g);
+        CHK("F2 hides instruments", g->instr_on == 0);
+        push_key(SDLK_F2, 0);
+        pump(g);
+    }
     push_key(SDLK_TAB, 0);          /* back to query focus */
     push_key(SDLK_u, KMOD_LCTRL);
     push_text(":q");
@@ -646,6 +975,9 @@ int main(int argc, char **argv) {
     g.tb = &tb;
     g.pl = player_create(&tb);
     browser_init(&g.b, &tb, console_init(g.pl));
+    viz_init(&g.v);
+    g.instr_on = 1;
+    for (int i = 0; i < 8; i++) g.fx_amt[i] = 0.5f;
     SDL_StartTextInput();
 
     int rc = 0;
@@ -664,6 +996,7 @@ int main(int argc, char **argv) {
             SDL_Delay(33);
         }
     }
+    viz_shutdown(&g.v);
     if (g.overlay_art) SDL_DestroyTexture(g.overlay_art);
     player_destroy(g.pl);
     browser_free(&g.b);

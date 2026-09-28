@@ -212,10 +212,19 @@ construction. The mouse is a convenience layer on top: click rows,
 double-click to play, click-to-seek, a volume slider, transport
 buttons. `t`/`a`/`:help` render as overlays with embedded art
 decoded to textures. Radio stations ride along exactly as in the
-TUI. `tagplay-gui --selftest DIR` drives the real event loop
-headless under SDL's dummy driver (15 checks). Milestone MG
-continues: FFT/spectrum and waveform instrument panels, per-effect
-controls, then the emscripten/WASM build.
+TUI. The instrument
+block (F2 toggles) carries the audiotard workbench into the player:
+an audacity-style full-file waveform strip built by a background
+decode pass (click or drag to seek), a live spectrum analyser fed
+by a clean/processed tap around the DSP stage -- the dim trace is
+the source, the bright one is what the chain did to it -- and an
+effects panel whose mode buttons and sliders (amount per character
+mode, ten EQ bands, bass/treble shelves) drive the same dsp_set_*
+API as the `:dsp` commands. audiotard's fft.c is vendored verbatim.
+`tagplay-gui --selftest DIR` drives the real event loop headless
+under SDL's dummy driver (21 checks, including an FFT bin-accuracy
+assert and a clean-vs-processed divergence assert under `am`).
+Next: the emscripten/WASM build.
 
 ## tagview
 

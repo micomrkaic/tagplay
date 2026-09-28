@@ -39,6 +39,12 @@ void player_move(player *p, size_t from, size_t to); /* reorder queue */
 void player_get_queue(player *p, vec *out);       /* copy queue indices */
 dsp_chain *player_dsp(player *p);                 /* thread-safe enough: atomic-ish params */
 
+/* Visualization tap: the audio thread deposits mono-mixed samples
+ * around the DSP stage -- clean (pre) and processed (post) -- into
+ * small rings. player_viz copies the most recent n of each (n <= 8192)
+ * and returns the sample rate, or 0 while nothing plays. */
+int player_viz(player *p, float *clean, float *proc, int n);
+
 /* status snapshot for the UI */
 typedef struct {
     int    playing;        /* 0 stopped, 1 playing, 2 paused */
