@@ -91,3 +91,9 @@ track *table_add(table *tb) {
 }
 size_t table_len(const table *tb) { return tb->tracks.len; }
 track *table_at(const table *tb, size_t i) { return vec_at((vec *)&tb->tracks, i); }
+
+/* numeric value of a tag: leading number of its first value (0 if none) */
+long tag_num(const track *t, const char *key) {
+    const char *v = track_first_tag(t, key);
+    return v ? atol(v) : 0;
+}

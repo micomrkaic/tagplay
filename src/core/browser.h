@@ -26,6 +26,7 @@
 
 #include "track.h"
 #include "util.h"
+#include "bmodel.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -37,22 +38,13 @@ enum {
 };
 
 typedef struct browser {
-    char   buf[1024];
-    size_t len, cur;         /* query content length, cursor */
-    vec    match;            /* vec of size_t, current result */
-    vec    last_good;        /* last successfully parsed result */
-    int    parse_ok;
-    char   sortspec[128];
-    const table *tb;
+    bmodel m;                /* the browse model (core/bmodel.h) */
     void  *ui;               /* the app's UI context (opaque to core) */
-    vec    sel;              /* size_t table indices, insertion order */
     int    focus;            /* 0 = query, 1 = list, 2 = alt (app) view */
     size_t lcur, loff;       /* list cursor + scroll offset */
     char   msg[160];         /* transient feedback line */
     vec    qview;            /* app-filled snapshot for the alt view */
     size_t qcur, qoff;       /* alt view cursor + scroll */
-    char   group[32];        /* tag key to group by; "" = off */
-    int    sel_view;         /* :sel mode: match mirrors the selection */
     unsigned cols_on;        /* COL_* bitmask */
     /* partial-refresh bookkeeping */
     int    vu_row;           /* 1-based terminal row of the status region */

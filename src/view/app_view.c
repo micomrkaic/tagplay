@@ -115,7 +115,7 @@ static void view_on_enter(void *ui, struct browser *b, const vec *items,
     if (!items->len) return;
     size_t pick = (!from_sel && b->focus == 1 && b->lcur < items->len)
                 ? b->lcur : 0;
-    const track *t = table_at(b->tb, *(size_t *)vec_at((vec *)items, pick));
+    const track *t = table_at(b->m.tb, *(size_t *)vec_at((vec *)items, pick));
     size_t len = 0;
     uint8_t *img = img_file_read(t, &len);
     if (!img) {

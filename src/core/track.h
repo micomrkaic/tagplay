@@ -58,4 +58,6 @@ track *table_add(table *tb);            /* returns new zeroed+init'd track */
 size_t table_len(const table *tb);
 track *table_at(const table *tb, size_t i);
 
+long tag_num(const track *t, const char *key);
+
 #endif

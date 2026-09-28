@@ -199,6 +199,19 @@ the years; prune with `:radio rm`.
     ~/.config/tagplay/playlists/*.m3u saved playlists (portable)
     ~/.config/tagplay/stations        url <TAB> name per line
 
+## tagplay-gui
+
+`make` also builds `tagplay-gui`, the SDL2 face of the same core:
+query bar with the live count, result list with click/ctrl-Space
+selection, queue panel, transport with click-to-seek and a volume
+slider, and a dsp mode button cycling the audiotard chain. Same
+model, same cache, same query language as the terminal -- rendered
+with an embedded public-domain 8x8 bitmap font, no toolkit, no font
+files. `tagplay-gui --selftest DIR` drives the whole event loop
+headless under SDL's dummy driver. This is milestone MG in motion:
+FFT/spectrum and waveform panels, per-effect controls, and the
+emscripten/WASM build follow.
+
 ## tagview
 
 The same machinery, pointed at photographs. `make` builds a second

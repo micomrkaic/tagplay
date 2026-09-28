@@ -18,10 +18,12 @@
  */
 
 #include "browser.h"
+#include "bmodel.h"
 #include "query.h"
 #include "art.h"
 #include "app.h"
 #include "browser.h"
+#include "bmodel.h"
 
 #define COL_ALBUM 1u
 #define COL_YEAR  2u
@@ -82,29 +84,11 @@ long now_ms(void) {
 }
 
 
-static long tag_num(const track *t, const char *key);
 
 /* classical-aware identity: if COMPOSER exists and differs from ARTIST,
  * the composer takes the em-dash and the performer goes in parens:
  *   "J.S. Bach — Chaconne (Hamelin)" instead of "Hamelin — Chaconne" */
 /* (4) ASCII VU meter: two channel bars on one line, dB-scaled */
-static long sel_find(const browser *st, size_t ti) {
-    for (size_t i = 0; i < st->sel.len; i++)
-        if (*(size_t *)vec_at((vec *)&st->sel, i) == ti) return (long)i;
-    return -1;
-}
-static void sel_toggle(browser *st, size_t ti) {
-    long i = sel_find(st, ti);
-    if (i < 0) {
-        vec_push(&st->sel, &ti);
-    } else {
-        memmove((char *)st->sel.data + (size_t)i * sizeof(size_t),
-                (char *)st->sel.data + ((size_t)i + 1) * sizeof(size_t),
-                (st->sel.len - (size_t)i - 1) * sizeof(size_t));
-        st->sel.len--;
-    }
-}
-
 #include <limits.h>
 /* messages and playlist paths are display strings; truncation is fine */
 #pragma GCC diagnostic ignored "-Wformat-truncation"
@@ -134,12 +118,12 @@ static void config_save(browser *st) {
             fprintf(f, "%s%s", first ? "" : ",", COLTAB[i].name);
             first = 0;
         }
-    fprintf(f, "\ngroup=%s\n", st->group);
+    fprintf(f, "\ngroup=%s\n", st->m.group);
     fclose(f);
 }
 static void config_load(browser *st) {
     st->cols_on = COLS_DEFAULT;
-    st->group[0] = 0;
+    st->m.group[0] = 0;
     char p[4096];
     config_path(p, sizeof p);
     FILE *f = fopen(p, "r");
@@ -157,8 +141,8 @@ static void config_load(browser *st) {
                 tok = strtok(NULL, ",");
             }
         } else if (!strncmp(line, "group=", 6)) {
-            snprintf(st->group, sizeof st->group, "%s", line + 6);
-            for (char *q = st->group; *q; q++)
+            snprintf(st->m.group, sizeof st->m.group, "%s", line + 6);
+            for (char *q = st->m.group; *q; q++)
                 *q = (char)toupper((unsigned char)*q);
         }
     }
@@ -190,7 +174,7 @@ static void playlist_save(browser *st, const char *name, const vec *idx) {
     }
     fprintf(f, "#EXTM3U\n");
     for (size_t i = 0; i < idx->len; i++) {
-        const track *t = table_at(st->tb, *(size_t *)vec_at((vec *)idx, i));
+        const track *t = table_at(st->m.tb, *(size_t *)vec_at((vec *)idx, i));
         const char *a = track_first_tag(t, "ARTIST");
         const char *ti = track_first_tag(t, "TITLE");
         fprintf(f, "#EXTINF:%ld,%s - %s\n", (long)(t->duration + 0.5),
@@ -211,12 +195,12 @@ static void playlist_load(browser *st, const char *name) {
         return;
     }
     /* realpath index of the table, built once per load */
-    size_t n = table_len(st->tb);
+    size_t n = table_len(st->m.tb);
     char **rps = xmalloc(n * sizeof(char *));
     for (size_t i = 0; i < n; i++) {
         char rp[PATH_MAX];
-        rps[i] = xstrdup(realpath(table_at(st->tb, i)->path, rp)
-                         ? rp : table_at(st->tb, i)->path);
+        rps[i] = xstrdup(realpath(table_at(st->m.tb, i)->path, rp)
+                         ? rp : table_at(st->m.tb, i)->path);
     }
     size_t found = 0, missing = 0;
     char line[PATH_MAX + 2];
@@ -227,7 +211,7 @@ static void playlist_load(browser *st, const char *name) {
         for (size_t i = 0; i < n; i++)
             if (!strcmp(rps[i], line)) { hit = (long)i; break; }
         if (hit < 0) { missing++; continue; }
-        if (sel_find(st, (size_t)hit) < 0) vec_push(&st->sel, &(size_t){ (size_t)hit });
+        if (bmodel_sel_find(&st->m, (size_t)hit) < 0) vec_push(&st->m.sel, &(size_t){ (size_t)hit });
         found++;
     }
     fclose(f);
@@ -277,16 +261,16 @@ static void total_duration(const table *tb, const vec *idx, char *out, size_t sz
 }
 
 static void print_track_line(const browser *st, size_t row, size_t ti, int width) {
-    const track *t = table_at(st->tb, ti);
+    const track *t = table_at(st->m.tb, ti);
     char who[512], dur[16], line[1024];
     APP->identity(t, who, sizeof who);
     fmt_duration(t->duration, dur, sizeof dur);
-    int selected = sel_find(st, ti) >= 0;
+    int selected = bmodel_sel_find(&st->m, ti) >= 0;
     int hot = (st->focus == 1 && row == st->lcur);
     size_t off = 0;
     off += (size_t)snprintf(line + off, sizeof line - off, "%4zu [%c] ",
                             row + 1, selected ? 'x' : ' ');
-    if ((st->cols_on & COL_TRACK) || st->group[0]) {
+    if ((st->cols_on & COL_TRACK) || st->m.group[0]) {
         long tn = tag_num(t, "TRACKNUMBER");
         if (tn > 0)
             off += (size_t)snprintf(line + off, sizeof line - off,
@@ -295,7 +279,7 @@ static void print_track_line(const browser *st, size_t row, size_t ti, int width
             off += (size_t)snprintf(line + off, sizeof line - off, "    ");
     }
     off += (size_t)snprintf(line + off, sizeof line - off, "%s", who);
-    if ((st->cols_on & COL_ALBUM) && !str_ieq(st->group, "ALBUM")) {
+    if ((st->cols_on & COL_ALBUM) && !str_ieq(st->m.group, "ALBUM")) {
         const char *album = track_first_tag(t, "ALBUM");
         off += (size_t)snprintf(line + off, sizeof line - off, "  [%s]",
                                 album ? album : "?");
@@ -323,7 +307,7 @@ static void print_track_line(const browser *st, size_t row, size_t ti, int width
 
 /* group header, e.g. "── Sonatas & Partitas ── (1720)" */
 static void print_group_header(browser *st, const track *t, int width) {
-    const char *v = track_first_tag(t, st->group);
+    const char *v = track_first_tag(t, st->m.group);
     long y = tag_num(t, "DATE");
     char line[512];
     snprintf(line, sizeof line, "\xe2\x94\x80\xe2\x94\x80 %s %s%ld%s",
@@ -335,12 +319,12 @@ static void print_group_header(browser *st, const track *t, int width) {
 
 /* does row i start a new group relative to row i-1? */
 static int group_breaks(browser *st, const vec *show, size_t i) {
-    if (!st->group[0]) return 0;
-    const track *cur = table_at(st->tb, *(size_t *)vec_at((vec *)show, i));
+    if (!st->m.group[0]) return 0;
+    const track *cur = table_at(st->m.tb, *(size_t *)vec_at((vec *)show, i));
     if (i == 0) return 1;
-    const track *prv = table_at(st->tb, *(size_t *)vec_at((vec *)show, i - 1));
-    const char *a = track_first_tag(cur, st->group);
-    const char *b = track_first_tag(prv, st->group);
+    const track *prv = table_at(st->m.tb, *(size_t *)vec_at((vec *)show, i - 1));
+    const char *a = track_first_tag(cur, st->m.group);
+    const char *b = track_first_tag(prv, st->m.group);
     return strcasecmp(a ? a : "", b ? b : "") != 0;
 }
 
@@ -358,59 +342,6 @@ static size_t tracks_that_fit(browser *st, const vec *show, size_t from,
     return i - from;
 }
 
-static long tag_num(const track *t, const char *key) {
-    const char *v = track_first_tag(t, key);
-    return v ? atol(v) : 0;
-}
-struct gctx { const table *tb; const char *key; };
-static int group_cmp(const void *a, const void *b, void *ud) {
-    struct gctx *g = ud;
-    const track *ta = table_at(g->tb, *(const size_t *)a);
-    const track *tb_ = table_at(g->tb, *(const size_t *)b);
-    const char *va = track_first_tag(ta, g->key);
-    const char *vb = track_first_tag(tb_, g->key);
-    int c = strcasecmp(va ? va : "", vb ? vb : "");
-    if (c) return c;
-    long d = tag_num(ta, "DISCNUMBER") - tag_num(tb_, "DISCNUMBER");
-    if (d) return d < 0 ? -1 : 1;
-    d = tag_num(ta, "TRACKNUMBER") - tag_num(tb_, "TRACKNUMBER");
-    if (d) return d < 0 ? -1 : 1;
-    const char *na = track_first_tag(ta, "TITLE");
-    const char *nb = track_first_tag(tb_, "TITLE");
-    return strcasecmp(na ? na : "", nb ? nb : "");
-}
-static void apply_group(browser *st) {
-    if (!st->group[0] || !st->match.len) return;
-    struct gctx g = { st->tb, st->group };
-    tp_sort(st->match.data, st->match.len, sizeof(size_t), group_cmp, &g);
-}
-
-static void rerun(browser *st) {
-    if (st->sel_view) {
-        /* selection view: the working list mirrors the marks, in
-         * selection (playlist) order; sort/group deliberately skipped */
-        st->match.len = 0;
-        for (size_t i = 0; i < st->sel.len; i++)
-            vec_push(&st->match, vec_at(&st->sel, i));
-        st->parse_ok = 1;
-        return;
-    }
-    qnode *q = query_parse(st->buf, 1 /* tolerant */);
-    if (!q && st->len > 0) {
-        st->parse_ok = 0; /* keep last_good on display */
-        return;
-    }
-    query_run(q, st->tb, &st->match);
-    if (st->sortspec[0]) query_sort(st->tb, &st->match, st->sortspec);
-    apply_group(st);
-    query_free(q);
-    st->parse_ok = 1;
-    /* copy into last_good */
-    st->last_good.len = 0;
-    for (size_t i = 0; i < st->match.len; i++)
-        vec_push(&st->last_good, vec_at(&st->match, i));
-}
-
 static void redraw(browser *st, size_t prev_count) {
     /* terminals speaking the kitty graphics protocol (Konsole, kitty)
      * keep chafa's images as overlays that ESC[2J does NOT remove --
@@ -421,7 +352,7 @@ static void redraw(browser *st, size_t prev_count) {
         else st->focus = 0;
         return;
     }
-    const vec *show = st->parse_ok ? &st->match : &st->last_good;
+    const vec *show = st->m.parse_ok ? &st->m.match : &st->m.last_good;
     int srows = APP->status_rows ? APP->status_rows(st->ui) : 0;
     int rows = term_rows();
     int cols = term_cols();
@@ -439,7 +370,7 @@ static void redraw(browser *st, size_t prev_count) {
     printf("\x1b[H"); /* home; lines clear themselves with \\x1b[K */
     {
         char hdr[256];
-        snprintf(hdr, sizeof hdr, "%s — %zu tracks   %s", APP->name, table_len(st->tb),
+        snprintf(hdr, sizeof hdr, "%s — %zu tracks   %s", APP->name, table_len(st->m.tb),
                  st->focus
                    ? "LIST: Space toggle · a all · i invert · t tags · c clear · +/- vol 5% \xc2\xb7 ( ) 1% · Enter play"
                    : "Tab: select tracks · Enter: play · :help");
@@ -461,7 +392,7 @@ static void redraw(browser *st, size_t prev_count) {
         size_t row = st->loff + i;
         if (group_breaks(st, show, row))
             print_group_header(st,
-                table_at(st->tb, *(size_t *)vec_at((vec *)show, row)),
+                table_at(st->m.tb, *(size_t *)vec_at((vec *)show, row)),
                 cols - 2);
         print_track_line(st, row, *(size_t *)vec_at((vec *)show, row), cols - 2);
     }
@@ -484,20 +415,20 @@ static void redraw(browser *st, size_t prev_count) {
         printf("\x1b[K\r\n");
     }
     char tot[32];
-    total_duration(st->tb, show, tot, sizeof tot);
-    const char *dim = st->parse_ok ? "" : "\x1b[2m";
+    total_duration(st->m.tb, show, tot, sizeof tot);
+    const char *dim = st->m.parse_ok ? "" : "\x1b[2m";
     const char *rst = "\x1b[0m";
     if (prev_count != (size_t)-1 && prev_count != show->len)
         printf("%s%zu → %zu tracks · %s%s", dim, prev_count, show->len, tot, rst);
     else
         printf("%s%zu tracks · %s%s", dim, show->len, tot, rst);
-    if (st->sel.len) {
+    if (st->m.sel.len) {
         char stot[32];
-        total_duration(st->tb, &st->sel, stot, sizeof stot);
-        printf("   \x1b[1mselected: %zu · %s\x1b[0m", st->sel.len, stot);
+        total_duration(st->m.tb, &st->m.sel, stot, sizeof stot);
+        printf("   \x1b[1mselected: %zu · %s\x1b[0m", st->m.sel.len, stot);
     }
-    if (st->sortspec[0]) printf("   (sort: %s)", st->sortspec);
-    printf("\x1b[K\r\n> %.*s\x1b[K\x1b[0J", (int)st->len, st->buf);
+    if (st->m.sortspec[0]) printf("   (sort: %s)", st->m.sortspec);
+    printf("\x1b[K\r\n> %.*s\x1b[K\x1b[0J", (int)st->m.len, st->m.buf);
     st->sig_valid = 1;
     st->sig_trows = rows;
     st->sig_tcols = cols;
@@ -505,23 +436,23 @@ static void redraw(browser *st, size_t prev_count) {
     st->sig_app = APP->ui_sig ? APP->ui_sig(st->ui) : 0;
     st->sig_rows = show->len;
     /* place cursor */
-    if (st->cur < st->len)
-        printf("\x1b[%zuD", st->len - st->cur);
+    if (st->m.cur < st->m.len)
+        printf("\x1b[%zuD", st->m.len - st->m.cur);
     fflush(stdout);
 }
 
 static void list_all(browser *st) {
-    const vec *show = st->parse_ok ? &st->match : &st->last_good;
+    const vec *show = st->m.parse_ok ? &st->m.match : &st->m.last_good;
     browser_raw_off();
     printf("\x1b[2J\x1b[H");
     for (size_t i = 0; i < show->len; i++) {
-        const track *t = table_at(st->tb, *(size_t *)vec_at((vec *)show, i));
+        const track *t = table_at(st->m.tb, *(size_t *)vec_at((vec *)show, i));
         char dur[16];
         fmt_duration(t->duration, dur, sizeof dur);
         const char *a = track_first_tag(t, "ARTIST");
         const char *ti = track_first_tag(t, "TITLE");
         printf("%4zu [%c] %-24.24s %-40.40s %8s  %s\n",
-               i + 1, sel_find(st, *(size_t *)vec_at((vec *)show, i)) >= 0 ? 'x' : ' ',
+               i + 1, bmodel_sel_find(&st->m, *(size_t *)vec_at((vec *)show, i)) >= 0 ? 'x' : ' ',
                a ? a : "?", ti ? ti : "?", dur, t->path);
     }
     printf("\n[%zu tracks — press Enter to continue]", show->len);
@@ -578,7 +509,7 @@ static void show_help(void) {
 }
 
 static void show_track_detail(browser *st, size_t ti) {
-    const track *t = table_at(st->tb, ti);
+    const track *t = table_at(st->m.tb, ti);
     browser_raw_off();
     printf("\x1b[2J\x1b[H");
     char dur[16];
@@ -633,7 +564,7 @@ static void show_track_detail(browser *st, size_t ti) {
 
 /* full-screen cover for a track ('a' in the queue view) */
 static void show_art(browser *st, size_t ti) {
-    const track *t = table_at(st->tb, ti);
+    const track *t = table_at(st->m.tb, ti);
     browser_raw_off();
     printf("\x1b[2J\x1b[H");
     char who[512];
@@ -661,8 +592,8 @@ static void show_stats(browser *st) {
     /* naive key frequency */
     vec keys; vec_init(&keys, sizeof(char *));
     vec counts; vec_init(&counts, sizeof(size_t));
-    for (size_t i = 0; i < table_len(st->tb); i++) {
-        const track *t = table_at(st->tb, i);
+    for (size_t i = 0; i < table_len(st->m.tb); i++) {
+        const track *t = table_at(st->m.tb, i);
         for (size_t j = 0; j < t->tags.len; j++) {
             tagkv *kv = vec_at((vec *)&t->tags, j);
             size_t k;
@@ -701,9 +632,9 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
         const char *arg = cmd + 4;
         while (*arg == ' ') arg++;
         size_t n = strlen(arg);
-        if (n >= sizeof st->sortspec) n = sizeof st->sortspec - 1;
-        memcpy(st->sortspec, arg, n);
-        st->sortspec[n] = 0;
+        if (n >= sizeof st->m.sortspec) n = sizeof st->m.sortspec - 1;
+        memcpy(st->m.sortspec, arg, n);
+        st->m.sortspec[n] = 0;
         return;
     }
     if (!strcmp(cmd, "help")) { show_help(); return; }
@@ -711,7 +642,7 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
     if (!strcmp(cmd, "ls")) { list_all(st); return; }
     if (!strncmp(cmd, "save ", 5)) {
         if (st->focus == 2 ||
-            (!st->sel.len && APP->alt_len && APP->alt_len(st->ui))) {
+            (!st->m.sel.len && APP->alt_len && APP->alt_len(st->ui))) {
             /* alt view (or nothing else to save): snapshot the app's
              * items, which captures any live reordering */
             if (APP->alt_snapshot && APP->alt_snapshot(st->ui, st) &&
@@ -720,8 +651,8 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
                 return;
             }
         }
-        const vec *src = st->sel.len ? &st->sel
-                       : (st->parse_ok ? &st->match : &st->last_good);
+        const vec *src = st->m.sel.len ? &st->m.sel
+                       : (st->m.parse_ok ? &st->m.match : &st->m.last_good);
         if (!src->len) snprintf(st->msg, sizeof st->msg, "nothing to save");
         else playlist_save(st, cmd + 5, src);
         return;
@@ -729,41 +660,41 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
     if (!strncmp(cmd, "load ", 5)) { playlist_load(st, cmd + 5); return; }
     if (!strcmp(cmd, "lists")) { playlist_list(st); return; }
     if (!strcmp(cmd, "clear")) {
-        st->sel.len = 0;
+        st->m.sel.len = 0;
         snprintf(st->msg, sizeof st->msg, "selection cleared");
         return;
     }
     if (!strcmp(cmd, "sel")) {
-        if (!st->sel.len) {
+        if (!st->m.sel.len) {
             snprintf(st->msg, sizeof st->msg, "nothing selected");
             return;
         }
-        st->sel_view = 1;
+        st->m.sel_view = 1;
         st->focus = 1;
         st->lcur = st->loff = 0;
         snprintf(st->msg, sizeof st->msg,
                  "%zu selected track%s — Space unmarks, Enter plays; any "
-                 "typing returns to search", st->sel.len,
-                 st->sel.len == 1 ? "" : "s");
+                 "typing returns to search", st->m.sel.len,
+                 st->m.sel.len == 1 ? "" : "s");
         return;
     }
     if (!strncmp(cmd, "group", 5)) {
         const char *a = cmd + 5;
         while (*a == ' ') a++;
         if (!*a || !strcmp(a, "off")) {
-            st->group[0] = 0;
+            st->m.group[0] = 0;
             snprintf(st->msg, sizeof st->msg, "grouping off");
         } else {
-            snprintf(st->group, sizeof st->group, "%s", a);
-            for (char *q = st->group; *q; q++)
+            snprintf(st->m.group, sizeof st->m.group, "%s", a);
+            for (char *q = st->m.group; *q; q++)
                 *q = (char)toupper((unsigned char)*q);
-            st->sortspec[0] = 0;   /* grouping owns the order */
+            st->m.sortspec[0] = 0;   /* grouping owns the order */
             snprintf(st->msg, sizeof st->msg,
                      "grouped by %s (disc/track order inside; :group off to clear)",
-                     st->group);
+                     st->m.group);
         }
         config_save(st);
-        rerun(st);
+        bmodel_rerun(&st->m);
         return;
     }
     if (!strncmp(cmd, "cols", 4)) {
@@ -810,13 +741,13 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
 void browser_run(const table *tb, void *ui) {
     browser st;
     memset(&st, 0, sizeof st);
-    st.tb = tb;
+    st.m.tb = tb;
     st.ui = ui;
-    vec_init(&st.match, sizeof(size_t));
-    vec_init(&st.last_good, sizeof(size_t));
-    vec_init(&st.sel, sizeof(size_t));
+    vec_init(&st.m.match, sizeof(size_t));
+    vec_init(&st.m.last_good, sizeof(size_t));
+    vec_init(&st.m.sel, sizeof(size_t));
     vec_init(&st.qview, sizeof(size_t));
-    st.parse_ok = 1;
+    st.m.parse_ok = 1;
 
     /* select() on STDIN_FILENO + buffered getchar() would lose bytes:
      * one read() can pull several keys into the stdio buffer where
@@ -844,7 +775,7 @@ void browser_run(const table *tb, void *ui) {
         return;
     }
     atexit(browser_raw_off);
-    rerun(&st);
+    bmodel_rerun(&st.m);
     redraw(&st, (size_t)-1);
 
     int quit = 0;
@@ -919,8 +850,8 @@ void browser_run(const table *tb, void *ui) {
             snprintf(m, sizeof m, "key %d", c);
             dbglog(m);
         }
-        size_t prev = (st.parse_ok ? st.match.len : st.last_good.len);
-        const vec *shown = st.parse_ok ? &st.match : &st.last_good;
+        size_t prev = (st.m.parse_ok ? st.m.match.len : st.m.last_good.len);
+        const vec *shown = st.m.parse_ok ? &st.m.match : &st.m.last_good;
         if (c == '\t') { /* Tab: cycle query -> list -> alt view -> query */
             size_t alen = APP->alt_len ? APP->alt_len(st.ui) : 0;
             if (st.focus == 0 && shown->len) st.focus = 1;
@@ -961,9 +892,9 @@ void browser_run(const table *tb, void *ui) {
             } else if (c == K_ESC) {
                 st.focus = 0;
             } else if (c == ':') {
-                st.len = st.cur = 0;
-                st.buf[0] = 0;
-                rerun(&st);
+                st.m.len = st.m.cur = 0;
+                st.m.buf[0] = 0;
+                bmodel_rerun(&st.m);
                 st.focus = 0;
                 handled = 0;
             } else if (c >= 32 && c < 127) {
@@ -980,27 +911,27 @@ void browser_run(const table *tb, void *ui) {
             else if (c == 'G') st.lcur = shown->len ? shown->len - 1 : 0;
             else if (c == ' ') {
                 if (shown->len) {
-                    sel_toggle(&st, *(size_t *)vec_at((vec *)shown, st.lcur));
+                    bmodel_sel_toggle(&st.m, *(size_t *)vec_at((vec *)shown, st.lcur));
                     if (st.lcur + 1 < shown->len) st.lcur++; /* advance */
                 }
             } else if (c == 'a') {
                 for (size_t i = 0; i < shown->len; i++) {
                     size_t ti = *(size_t *)vec_at((vec *)shown, i);
-                    if (sel_find(&st, ti) < 0) vec_push(&st.sel, &ti);
+                    if (bmodel_sel_find(&st.m, ti) < 0) vec_push(&st.m.sel, &ti);
                 }
                 snprintf(st.msg, sizeof st.msg, "added %zu -> sel:%zu",
-                         shown->len, st.sel.len);
+                         shown->len, st.m.sel.len);
             } else if (c == 't') {
                 if (shown->len)
                     show_track_detail(&st,
                         *(size_t *)vec_at((vec *)shown, st.lcur));
             } else if (c == 'i') {
                 for (size_t i = 0; i < shown->len; i++)
-                    sel_toggle(&st, *(size_t *)vec_at((vec *)shown, i));
+                    bmodel_sel_toggle(&st.m, *(size_t *)vec_at((vec *)shown, i));
                 snprintf(st.msg, sizeof st.msg, "selection inverted -> sel:%zu",
-                         st.sel.len);
+                         st.m.sel.len);
             } else if (c == 'c') {
-                st.sel.len = 0;
+                st.m.sel.len = 0;
                 snprintf(st.msg, sizeof st.msg, "selection cleared");
             } else if (c == K_PGUP || c == K_PGDN) {
                 int rows = term_rows() - 6;
@@ -1020,9 +951,9 @@ void browser_run(const table *tb, void *ui) {
             } else if (c == ':') {
                 /* commands from list mode get a fresh line: the query is
                  * not being edited here, so clearing it is safe */
-                st.len = st.cur = 0;
-                st.buf[0] = 0;
-                rerun(&st);
+                st.m.len = st.m.cur = 0;
+                st.m.buf[0] = 0;
+                bmodel_rerun(&st.m);
                 st.focus = 0;
                 handled = 0;
             } else if (APP->global_key && APP->global_key(st.ui, &st, c)) {
@@ -1034,71 +965,71 @@ void browser_run(const table *tb, void *ui) {
             if (handled) { redraw(&st, prev); continue; }
         }
         if (c == '\r' || c == '\n') {
-            st.buf[st.len] = 0;
-            if (st.buf[0] == ':') {
-                handle_command(&st, st.buf + 1, &quit);
-                st.len = st.cur = 0;
-                st.buf[0] = 0;
-                rerun(&st);
+            st.m.buf[st.m.len] = 0;
+            if (st.m.buf[0] == ':') {
+                handle_command(&st, st.m.buf + 1, &quit);
+                st.m.len = st.m.cur = 0;
+                st.m.buf[0] = 0;
+                bmodel_rerun(&st.m);
             } else {
                 /* Enter: play the selection if any, else current results */
-                const vec *q = st.sel.len ? &st.sel
-                             : (st.parse_ok ? &st.match : &st.last_good);
+                const vec *q = st.m.sel.len ? &st.m.sel
+                             : (st.m.parse_ok ? &st.m.match : &st.m.last_good);
                 if (q->len && APP->on_enter)
-                    APP->on_enter(st.ui, &st, q, st.sel.len > 0);
+                    APP->on_enter(st.ui, &st, q, st.m.sel.len > 0);
                 /* the query is kept: Tab returns to the same filtered
                  * list, marks in context ('':'' still opens a fresh
                  * command line from list/alt views) */
             }
         } else if (c == 127 || c == 8) { /* backspace */
-            st.sel_view = 0;
-            if (st.cur > 0) {
-                memmove(st.buf + st.cur - 1, st.buf + st.cur, st.len - st.cur);
-                st.cur--; st.len--;
-                st.buf[st.len] = 0;
-                rerun(&st);
+            st.m.sel_view = 0;
+            if (st.m.cur > 0) {
+                memmove(st.m.buf + st.m.cur - 1, st.m.buf + st.m.cur, st.m.len - st.m.cur);
+                st.m.cur--; st.m.len--;
+                st.m.buf[st.m.len] = 0;
+                bmodel_rerun(&st.m);
             }
         } else if (c == 16 || c == 14 || c == 2) { /* transport ctrl keys */
             if (APP->global_key) APP->global_key(st.ui, &st, c);
         } else if (c == 21) { /* ctrl-u */
-            st.len = st.cur = 0;
-            st.buf[0] = 0;
-            rerun(&st);
+            st.m.len = st.m.cur = 0;
+            st.m.buf[0] = 0;
+            bmodel_rerun(&st.m);
         } else if (c == 23) { /* ctrl-w: delete word */
-            while (st.cur > 0 && st.buf[st.cur - 1] == ' ') { st.cur--; st.len--; }
-            while (st.cur > 0 && st.buf[st.cur - 1] != ' ') {
-                memmove(st.buf + st.cur - 1, st.buf + st.cur, st.len - st.cur);
-                st.cur--; st.len--;
+            while (st.m.cur > 0 && st.m.buf[st.m.cur - 1] == ' ') { st.m.cur--; st.m.len--; }
+            while (st.m.cur > 0 && st.m.buf[st.m.cur - 1] != ' ') {
+                memmove(st.m.buf + st.m.cur - 1, st.m.buf + st.m.cur, st.m.len - st.m.cur);
+                st.m.cur--; st.m.len--;
             }
-            st.buf[st.len] = 0;
-            rerun(&st);
-        } else if (c == K_LEFT)  { if (st.cur > 0) st.cur--; }
-        else if (c == K_RIGHT) { if (st.cur < st.len) st.cur++; }
-        else if (c == K_HOME)  { st.cur = 0; }
-        else if (c == K_END)   { st.cur = st.len; }
+            st.m.buf[st.m.len] = 0;
+            bmodel_rerun(&st.m);
+        } else if (c == K_LEFT)  { if (st.m.cur > 0) st.m.cur--; }
+        else if (c == K_RIGHT) { if (st.m.cur < st.m.len) st.m.cur++; }
+        else if (c == K_HOME)  { st.m.cur = 0; }
+        else if (c == K_END)   { st.m.cur = st.m.len; }
         else if (c == K_DEL) {
-            if (st.cur < st.len) {
-                memmove(st.buf + st.cur, st.buf + st.cur + 1,
-                        st.len - st.cur - 1);
-                st.len--;
-                st.buf[st.len] = 0;
-                rerun(&st);
+            if (st.m.cur < st.m.len) {
+                memmove(st.m.buf + st.m.cur, st.m.buf + st.m.cur + 1,
+                        st.m.len - st.m.cur - 1);
+                st.m.len--;
+                st.m.buf[st.m.len] = 0;
+                bmodel_rerun(&st.m);
             }
-        } else if (c >= 32 && c < 127 && st.len + 1 < sizeof st.buf) {
-            st.sel_view = 0;
-            memmove(st.buf + st.cur + 1, st.buf + st.cur, st.len - st.cur);
-            st.buf[st.cur++] = (char)c;
-            st.len++;
-            st.buf[st.len] = 0;
-            rerun(&st);
+        } else if (c >= 32 && c < 127 && st.m.len + 1 < sizeof st.m.buf) {
+            st.m.sel_view = 0;
+            memmove(st.m.buf + st.m.cur + 1, st.m.buf + st.m.cur, st.m.len - st.m.cur);
+            st.m.buf[st.m.cur++] = (char)c;
+            st.m.len++;
+            st.m.buf[st.m.len] = 0;
+            bmodel_rerun(&st.m);
         }
         if (!quit) redraw(&st, prev);
     }
     browser_raw_off();
     printf("\n");
-    vec_free(&st.match);
-    vec_free(&st.last_good);
-    vec_free(&st.sel);
+    vec_free(&st.m.match);
+    vec_free(&st.m.last_good);
+    vec_free(&st.m.sel);
     vec_free(&st.qview);
 }
 

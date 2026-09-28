@@ -255,7 +255,7 @@ static void status_region(browser *st, const player_status *ps, int cols) {
         } else printf("\x1b[K\r\n");
         progress_line(ps, cols);
         printf("\x1b[K\r\n");
-        const track *ct = table_at(st->tb, ps->track_index);
+        const track *ct = table_at(st->m.tb, ps->track_index);
         const char *ttl = track_first_tag(ct, "TITLE");
         char cp[16], cd[16], mt[512];
         fmt_duration(ps->pos, cp, sizeof cp);
@@ -321,7 +321,7 @@ static void redraw_queue(browser *st) {
     for (size_t i = 0; i < n; i++) {
         size_t row = st->qoff + i;
         size_t ti = *(size_t *)vec_at(&st->qview, row);
-        const track *t = table_at(st->tb, ti);
+        const track *t = table_at(st->m.tb, ti);
         char who[512], dur[16];
         console_identity(t, who, sizeof who);
         fmt_duration(t->duration, dur, sizeof dur);
@@ -341,7 +341,7 @@ static void redraw_queue(browser *st) {
     /* totals: whole queue, and remaining from the playing position */
     double tot = 0, left = 0;
     for (size_t i = 0; i < st->qview.len; i++) {
-        double d = table_at(st->tb,
+        double d = table_at(st->m.tb,
                             *(size_t *)vec_at(&st->qview, i))->duration;
         tot += d;
         if (ps.playing && i > ps.queue_pos) left += d;
@@ -352,7 +352,7 @@ static void redraw_queue(browser *st) {
     fmt_duration_long(left, bl, sizeof bl);
     printf("queue: %zu · %s", st->qview.len, bt);
     if (ps.playing) printf(" · %s left", bl);
-    if (st->sel.len) printf("   \x1b[1mselected: %zu\x1b[0m", st->sel.len);
+    if (st->m.sel.len) printf("   \x1b[1mselected: %zu\x1b[0m", st->m.sel.len);
     printf("\x1b[K\r\n");
 
     /* rows above the VU line: header+blank(2) + list(n) + overflow +
@@ -550,7 +550,7 @@ void console_on_enter(void *ui, struct browser *b, const vec *q, int from_sel) {
     /* the selection is a staging area: once handed to the queue it has
      * served its purpose, so consume it -- the next Enter plays what's
      * on screen, not last week's marks */
-    if (from_sel) { b->sel.len = 0; b->sel_view = 0; }
+    if (from_sel) { b->m.sel.len = 0; b->m.sel_view = 0; }
     b->focus = 2;       /* land in the queue view */
     b->qcur = 0;
 }
@@ -604,7 +604,7 @@ int console_command(void *ui, struct browser *b, const char *cmd) {
                          "usage: :radio add <url> <name>");
                 return 1;
             }
-            station_add_track((table *)b->tb, nm, url);
+            station_add_track((table *)b->m.tb, nm, url);
             station_persist(url, nm, 0);
             snprintf(b->msg, sizeof b->msg, "station added: %s", nm);
             return 1;

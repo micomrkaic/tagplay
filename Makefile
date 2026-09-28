@@ -25,14 +25,20 @@ VIEW_SRC := $(wildcard src/view/*.c)
 CORE_OBJ := $(CORE_SRC:.c=.o)
 PLAY_OBJ := $(PLAY_SRC:.c=.o)
 VIEW_OBJ := $(VIEW_SRC:.c=.o)
+GUI_SRC := $(wildcard src/gui/*.c)
+GUI_OBJ := $(GUI_SRC:.c=.o)
+PLAY_NOMAIN := $(filter-out src/play/main.o,$(PLAY_OBJ))
 
 
-all: tagplay tagview
+all: tagplay tagview tagplay-gui
 
 tagplay: $(CORE_OBJ) $(PLAY_OBJ)
 	$(CC) $(CFLAGS) -o $@ $(CORE_OBJ) $(PLAY_OBJ) $(LDLIBS)
 
 # the viewer links only the lean core deps: pcre2, pthread, m
+tagplay-gui: $(CORE_OBJ) $(PLAY_NOMAIN) $(GUI_OBJ)
+	$(CC) $(CFLAGS) -o $@ $(CORE_OBJ) $(PLAY_NOMAIN) $(GUI_OBJ) $(LDLIBS)
+
 tagview: $(CORE_OBJ) $(VIEW_OBJ)
 	$(CC) $(CFLAGS) -o $@ $(CORE_OBJ) $(VIEW_OBJ) $(shell pkg-config --libs libpcre2-8) -lpthread -lm
 
@@ -40,7 +46,7 @@ src/%.o: src/%.c $(wildcard src/*.h)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f tagplay tagview src/core/*.o src/play/*.o src/view/*.o
+	rm -f tagplay tagview tagplay-gui src/core/*.o src/play/*.o src/view/*.o src/gui/*.o
 
 install: tagplay
 	install -m 755 tagplay $(HOME)/.local/bin/
