@@ -199,7 +199,8 @@ static const double EQ_FREQ[10] = {
 
 int dsp_set_eq(dsp_chain *c, const double *db, int n) {
     pthread_mutex_lock(&c->mu);
-    if (c->mode != M_EQ) pipeline_reset(c);
+    int eq_fresh = (c->mode != M_EQ);
+    if (eq_fresh) pipeline_reset(c);
     c->mode = M_EQ;
     for (int i = 0; i < 10; i++) {
         double g = i < n ? db[i] : 0.0;
@@ -208,14 +209,15 @@ int dsp_set_eq(dsp_chain *c, const double *db, int n) {
         c->eq_db[i] = g;
     }
     derive_params(c);
-    c->gain_set = 0;
+    if (eq_fresh) c->gain_set = 0;
     pthread_mutex_unlock(&c->mu);
     return 0;
 }
 
 int dsp_set_tone(dsp_chain *c, double bass_db, double treble_db) {
     pthread_mutex_lock(&c->mu);
-    if (c->mode != M_TONE) pipeline_reset(c);
+    int tn_fresh = (c->mode != M_TONE);
+    if (tn_fresh) pipeline_reset(c);
     c->mode = M_TONE;
     if (bass_db > 12) bass_db = 12;
     if (bass_db < -12) bass_db = -12;
@@ -224,7 +226,7 @@ int dsp_set_tone(dsp_chain *c, double bass_db, double treble_db) {
     c->bass_db = bass_db;
     c->treble_db = treble_db;
     derive_params(c);
-    c->gain_set = 0;
+    if (tn_fresh) c->gain_set = 0;
     pthread_mutex_unlock(&c->mu);
     return 0;
 }
@@ -241,11 +243,16 @@ int dsp_set_mode(dsp_chain *c, const char *mode, double amount) {
     else if (!strcmp(mode, "am"))    m = M_AM;
     else return -1;
     pthread_mutex_lock(&c->mu);
-    if (m != c->mode) pipeline_reset(c);
+    int fresh = (m != c->mode);
+    if (fresh) pipeline_reset(c);
     c->mode = m;
     c->amount = amount;
     derive_params(c);
-    c->gain_set = 0;         /* re-measure the RMS match at next block    */
+    /* re-measure the RMS match only on a mode CHANGE: re-measuring on
+     * every amount tweak steps the level mid-stream -- an audible
+     * click under a slider drag. A slightly stale match during a drag
+     * is inaudible; the next mode change refreshes it. */
+    if (fresh) c->gain_set = 0;
     pthread_mutex_unlock(&c->mu);
     return 0;
 }

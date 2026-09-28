@@ -123,17 +123,19 @@ void viz_want_peaks(viz *v, const table *tb, size_t ti) {
 }
 
 int viz_fold_spectrum(viz *v, const float *clean, const float *proc,
-                      int n) {
+                      int n, double alpha, double proc_scale) {
     if (n < VIZ_FFT) return 0;
     static double x[VIZ_FFT], pw[VIZ_FFT / 2];
-    const double a = v->sp_primed ? 0.35 : 1.0;   /* EMA weight */
+    if (alpha <= 0.0) alpha = 0.05;
+    if (alpha > 1.0) alpha = 1.0;
+    const double a = v->sp_primed ? alpha : 1.0;
     for (int i = 0; i < VIZ_FFT; i++)
         x[i] = clean[n - VIZ_FFT + i];
     fft_spectrum_pow(x, VIZ_FFT, pw);
     for (int i = 0; i < VIZ_FFT / 2; i++)
         v->sp_clean[i] += a * (pw[i] - v->sp_clean[i]);
     for (int i = 0; i < VIZ_FFT; i++)
-        x[i] = proc[n - VIZ_FFT + i];
+        x[i] = proc[n - VIZ_FFT + i] * proc_scale;
     fft_spectrum_pow(x, VIZ_FFT, pw);
     for (int i = 0; i < VIZ_FFT / 2; i++)
         v->sp_proc[i] += a * (pw[i] - v->sp_proc[i]);

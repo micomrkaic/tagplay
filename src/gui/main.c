@@ -81,7 +81,9 @@ typedef struct {
     float    fx_amt[8];      /* remembered amount per mode */
     double   eq_db[10];
     double   bass_db, treble_db;
-    int      drag;           /* 0 none, 1 vol, 2 seek, 3 wf, 10+i fx */
+    int      drag;           /* 0=-, 1 vol, 2 seek, 3 wf, 9 avg, 10+i fx */
+    double   sp_avg;         /* spectrum smoothing 0..1 (slider) */
+    SDL_Rect avg_r;
 } gui;
 
 static const char *const fx_names[8] =
@@ -255,6 +257,14 @@ static void draw_instruments(gui *g, const player_status *ps) {
     } else
         draw_text(r, g->sp_r.x + pad, g->sp_r.y + g->sp_r.h / 2,
                   "(spectrum: play something)", DIM);
+    /* averaging control, resident in the spectrum box */
+    g->avg_r = (SDL_Rect){ g->sp_r.x + g->sp_r.w - 14 * CW,
+                           g->sp_r.y + g->sp_r.h - CH - 4, 10 * CW, 6 };
+    draw_text(r, g->avg_r.x - 4 * CW, g->avg_r.y - 4, "avg", DIM);
+    fill(r, g->avg_r, ROW);
+    SDL_Rect af = g->avg_r;
+    af.w = (int)(af.w * g->sp_avg);
+    fill(r, af, HL);
 
     /* effects: mode buttons + the active mode's controls */
     fill(r, g->fx_r, (SDL_Color){ 20, 20, 26, 255 });
@@ -279,10 +289,13 @@ static void draw_instruments(gui *g, const player_status *ps) {
         slider(g, (SDL_Rect){ g->fx_r.x + 6, sy, g->fx_r.w - 12, CH },
                "amt", g->fx_amt[g->fx_mode], vt);
     } else if (g->fx_mode == 6) {
+        int colw = (g->fx_r.w - 12) / 2;
         for (int i = 0; i < 10; i++) {
+            int col = i / 5, row = i % 5;
             snprintf(vt, sizeof vt, "%+.0f", g->eq_db[i]);
-            slider(g, (SDL_Rect){ g->fx_r.x + 6, sy + i * (CH + 4),
-                                  g->fx_r.w - 12, CH },
+            slider(g, (SDL_Rect){ g->fx_r.x + 6 + col * colw,
+                                  sy + row * (CH + 6),
+                                  colw - 6, CH },
                    eq_lbl[i], (g->eq_db[i] + 18.0) / 36.0, vt);
         }
     } else if (g->fx_mode == 7) {
@@ -378,7 +391,7 @@ static void frame(gui *g) {
               g->b.m.parse_ok ? DIM : HL);
 
     int top = pad + CH + 14;
-    int instr_h = g->instr_on ? 56 + 150 + 12 : 0;
+    int instr_h = g->instr_on ? 56 + 194 + 12 : 0;
     int bot = g->h - 4 * CH - 26 - instr_h;
     g->list_top = top;
     g->row_h = CH + 6;
@@ -464,9 +477,9 @@ static void frame(gui *g) {
         int iy = g->h - 4 * CH - 14 - instr_h + 4;
         g->wf_r = (SDL_Rect){ pad, iy, g->w - 2 * pad, 56 };
         int sw = (g->w - 2 * pad) * 58 / 100;
-        g->sp_r = (SDL_Rect){ pad, iy + 60, sw, 146 };
+        g->sp_r = (SDL_Rect){ pad, iy + 60, sw, 190 };
         g->fx_r = (SDL_Rect){ pad + sw + 8, iy + 60,
-                              g->w - 2 * pad - sw - 8, 146 };
+                              g->w - 2 * pad - sw - 8, 190 };
         draw_instruments(g, &ps);
     }
 
@@ -595,7 +608,9 @@ static void handle(gui *g, const SDL_Event *e) {
     case SDL_MOUSEMOTION: {
         if (!g->drag) break;
         int mx = e->motion.x;
-        if (g->drag == 1)
+        if (g->drag == 9)
+            g->sp_avg = slider_frac(g->avg_r, mx);
+        else if (g->drag == 1)
             dsp_set_gain(player_dsp(g->pl),
                          2.0 * (mx - g->vol_r.x) /
                          (double)g->vol_r.w);
@@ -639,7 +654,10 @@ static void handle(gui *g, const SDL_Event *e) {
         int mx = e->button.x, my = e->button.y;
         SDL_Point p = { mx, my };
         if (g->overlay) { g->overlay = 0; break; }
-        if (g->instr_on && SDL_PointInRect(&p, &g->wf_r)) {
+        if (g->instr_on && SDL_PointInRect(&p, &g->avg_r)) {
+            g->sp_avg = slider_frac(g->avg_r, mx);
+            g->drag = 9;
+        } else if (g->instr_on && SDL_PointInRect(&p, &g->wf_r)) {
             player_status ps;
             player_get_status(g->pl, &ps);
             if (ps.playing && ps.dur > 0)
@@ -753,7 +771,10 @@ static void tick(gui *g) {
     int rate = player_viz(g->pl, g->tap_c, g->tap_p, VIZ_FFT);
     if (rate > 0) {
         g->tap_rate = rate;
-        viz_fold_spectrum(&g->v, g->tap_c, g->tap_p, VIZ_FFT);
+        double gn = dsp_gain(player_dsp(g->pl));
+        double comp = gn > 1e-4 ? 1.0 / gn : 1.0;
+        viz_fold_spectrum(&g->v, g->tap_c, g->tap_p, VIZ_FFT,
+                          1.0 - 0.95 * g->sp_avg, comp);
     }
 }
 
@@ -909,6 +930,35 @@ static int selftest(gui *g) {
         fx_apply(g);
         CHK("eq panel drives dsp",
             !strcmp(dsp_mode_name(player_dsp(g->pl)), "eq"));
+        /* volume must NOT split the overlay: dsp off, volume 40%,
+         * restart, fold fresh -- clean and processed spectra agree */
+        g->fx_mode = 0;
+        fx_apply(g);
+        dsp_set_gain(player_dsp(g->pl), 0.4);
+        g->v.sp_primed = 0;
+        g->sp_avg = 0.0;                /* raw frames for the check */
+        push_key(SDLK_RETURN, 0);       /* queue view: restart track */
+        pump(g);
+        SDL_Delay(400);
+        tick(g);
+        double dsum = 0;
+        int nb = 0;
+        for (int i = 8; i < 400; i++) {
+            double dbc = 10.0 * log10(g->v.sp_clean[i] + 1e-12);
+            double dbp = 10.0 * log10(g->v.sp_proc[i] + 1e-12);
+            if (dbc > -70.0) { dsum += fabs(dbp - dbc); nb++; }
+        }
+        CHK("volume does not split the overlay (dsp off)",
+            nb > 4 && dsum / nb < 2.0);
+        /* a simulated amount drag: many rapid updates on one mode;
+         * the chain must keep its mode and match gain (no re-measure
+         * churn -- the click fix) */
+        dsp_set_mode(player_dsp(g->pl), "vinyl", 0.30);
+        for (int i = 0; i <= 40; i++)
+            dsp_set_mode(player_dsp(g->pl), "vinyl",
+                         0.30 + 0.01 * i);
+        CHK("amount drag keeps the chain live",
+            !strcmp(dsp_mode_name(player_dsp(g->pl)), "vinyl"));
         push_key(SDLK_F2, 0);
         pump(g);
         CHK("F2 hides instruments", g->instr_on == 0);
@@ -977,6 +1027,7 @@ int main(int argc, char **argv) {
     browser_init(&g.b, &tb, console_init(g.pl));
     viz_init(&g.v);
     g.instr_on = 1;
+    g.sp_avg = 0.68;   /* the old fixed feel */
     for (int i = 0; i < 8; i++) g.fx_amt[i] = 0.5f;
     SDL_StartTextInput();
 

@@ -47,9 +47,12 @@ void viz_shutdown(viz *v);
  * frame -- it only restarts when the track changes */
 void viz_want_peaks(viz *v, const table *tb, size_t ti);
 void viz_no_peaks(viz *v);     /* stop + clear (radio, silence) */
-/* fold the latest tap into the averaged spectra (call per frame);
- * n samples at the given rate; returns 0 if nothing to fold */
+/* fold the latest tap into the averaged spectra (call per frame).
+ * alpha in (0,1]: EMA weight of the new frame (1 = no averaging).
+ * proc_scale multiplies processed samples before the FFT -- the GUI
+ * passes 1/volume so the overlay compares CHARACTER, not level.
+ * Returns 0 if nothing to fold. */
 int viz_fold_spectrum(viz *v, const float *clean, const float *proc,
-                      int n);
+                      int n, double alpha, double proc_scale);
 
 #endif
