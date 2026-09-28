@@ -6,16 +6,45 @@
 # Publish tagplay to https://github.com/micomrkaic/tagplay
 #
 # Usage:
-#   ./publish.sh                 # commit "update" and push
-#   ./publish.sh "message"       # commit with your message and push
+#   ./publish.sh                              # commit "update", push
+#   ./publish.sh "message"                    # commit with message
+#   ./publish.sh RELEASE.tar.gz "message"     # the whole ritual in one
+#                                             # verb: sync to origin,
+#                                             # unpack, gate, publish
+#
+# The tarball form replaces the by-hand sequence (fetch, reset, untar,
+# build, publish) that has now been half-performed twice. The build
+# gate is strict: a clean rebuild must produce zero warnings and zero
+# errors or nothing is committed.
 #
 # The remote is set ONCE, on first run, to the HTTPS URL. An existing
-# origin (whatever its URL) is left strictly alone, so a manually
-# configured remote survives upgrades of this script.
+# origin (whatever its URL) is left strictly alone.
 set -e
 cd "$(dirname "$0")"
 
-MSG=${1:-update}
+MSG=update
+case "$1" in
+*.tar.gz)
+    TARBALL=$1
+    [ -f "$TARBALL" ] || { echo "publish.sh: no such tarball: $TARBALL"; exit 1; }
+    MSG=${2:-update}
+    if [ -d .git ] && git remote get-url origin >/dev/null 2>&1; then
+        echo "publish.sh: syncing to origin/main"
+        git fetch origin
+        git reset --hard origin/main
+    fi
+    echo "publish.sh: unpacking $TARBALL"
+    tar xzf "$TARBALL" --strip-components=1
+    if [ -d .git ] && git diff --quiet && \
+       [ -z "$(git status --porcelain)" ]; then
+        echo "publish.sh: tarball introduces no changes (already published?)"
+        exit 1
+    fi
+    ;;
+*)
+    [ -n "$1" ] && MSG=$1
+    ;;
+esac
 
 if [ ! -d .git ]; then
     git init -b main
@@ -24,15 +53,45 @@ fi
 
 cat > .gitignore <<'GITEOF'
 tagplay
+tagview
+tagplay-gui
 *.o
 testlib/
+phototest/
 *.tar.gz
+.publish_build.log
 # never publish credentials, whatever they were named
 refurbkey*
 id_rsa* id_ecdsa* id_ed25519*
 *.pem
 *.key
 GITEOF
+
+# one-time heal: binaries that slipped into tracking before the
+# ignore list knew their names
+for bin in tagview tagplay-gui tagplay; do
+    if git ls-files --error-unmatch "$bin" >/dev/null 2>&1; then
+        echo "publish.sh: untracking leaked binary: $bin"
+        git rm --cached -q "$bin"
+    fi
+done
+
+# the gate: a CLEAN rebuild, zero errors, zero warnings, or no commit.
+# (an incremental build can hide warnings in objects it skips; that
+# hole has bitten once already)
+echo "publish.sh: gate: make clean && make"
+make clean >/dev/null
+if ! make >.publish_build.log 2>&1; then
+    echo "publish.sh: REFUSING to commit: the build fails."
+    tail -20 .publish_build.log
+    exit 1
+fi
+if grep -qE "warning|error" .publish_build.log; then
+    echo "publish.sh: REFUSING to commit: the build is not warning-clean:"
+    grep -E "warning|error" .publish_build.log | head -10
+    exit 1
+fi
+rm -f .publish_build.log
 
 git add -A
 

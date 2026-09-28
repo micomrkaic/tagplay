@@ -1,7 +1,11 @@
 tagplay
+tagview
+tagplay-gui
 *.o
 testlib/
+phototest/
 *.tar.gz
+.publish_build.log
 # never publish credentials, whatever they were named
 refurbkey*
 id_rsa* id_ecdsa* id_ed25519*

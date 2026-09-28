@@ -220,10 +220,15 @@ by a clean/processed tap around the DSP stage -- the dim trace is
 the source, the bright one is what the chain did to it -- and an
 effects panel whose mode buttons and sliders (amount per character
 mode, ten EQ bands, bass/treble shelves) drive the same dsp_set_*
-API as the `:dsp` commands. audiotard's fft.c is vendored verbatim. The processed
+API as the `:dsp` commands. audiotard's fft.c is vendored verbatim, and text is
+JetBrains Mono (OFL, ASCII subset embedded) rasterized at runtime
+by the vendored public-domain stb_truetype -- no font files, no
+new link dependencies. The processed
 trace is volume-compensated so the overlay compares character, not
-level; an `avg` slider in the spectrum box sets the display
-averaging; and live parameter tweaks (amount drags, EQ bands)
+level; the dB axis auto-ranges to the material with 20 dB
+gridlines; a control lane under the plot picks the display
+averaging -- `ema` with an adjustable weight, or `avgN`, a plain
+mean over the last N frames (2..64); and live parameter tweaks (amount drags, EQ bands)
 update the chain in place without re-measuring the RMS match, so
 turning a knob never clicks.
 `tagplay-gui --selftest DIR` drives the real event loop headless

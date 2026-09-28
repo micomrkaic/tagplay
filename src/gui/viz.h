@@ -39,7 +39,15 @@ typedef struct {
     double   sp_clean[VIZ_FFT / 2];
     double   sp_proc[VIZ_FFT / 2];
     int      sp_primed;
+    /* boxcar mode: ring of recent per-frame spectra */
+    float  (*ring_c)[VIZ_FFT / 2];
+    float  (*ring_p)[VIZ_FFT / 2];
+    int      ring_w, ring_n;   /* write slot, frames stored */
 } viz;
+
+#define VIZ_RING 64            /* boxcar depth ceiling */
+#define VIZ_EMA  0
+#define VIZ_BOX  1
 
 void viz_init(viz *v);
 void viz_shutdown(viz *v);
@@ -48,11 +56,14 @@ void viz_shutdown(viz *v);
 void viz_want_peaks(viz *v, const table *tb, size_t ti);
 void viz_no_peaks(viz *v);     /* stop + clear (radio, silence) */
 /* fold the latest tap into the averaged spectra (call per frame).
- * alpha in (0,1]: EMA weight of the new frame (1 = no averaging).
+ * mode VIZ_EMA: param is alpha in (0,1], the EMA weight of the new
+ * frame (1 = raw). mode VIZ_BOX: param is N, the boxcar length in
+ * frames (2..VIZ_RING); the display is the plain mean of the last N.
  * proc_scale multiplies processed samples before the FFT -- the GUI
  * passes 1/volume so the overlay compares CHARACTER, not level.
  * Returns 0 if nothing to fold. */
 int viz_fold_spectrum(viz *v, const float *clean, const float *proc,
-                      int n, double alpha, double proc_scale);
+                      int n, int mode, double param,
+                      double proc_scale);
 
 #endif

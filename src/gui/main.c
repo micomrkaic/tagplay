@@ -47,13 +47,14 @@
 #include "stb_image.h"
 #include "viz.h"
 #include "fft.h"
-#include "font8x8.h"
+#include "text.h"
 
 #define WIN_W 1100
 #define WIN_H 720
-#define FS    2
-#define CH    (8 * FS)
-#define CW    (8 * FS)
+/* cell metrics come from the baked font (monospaced, so column
+ * arithmetic stays exact) */
+#define CH    (text_ch())
+#define CW    (text_cw())
 
 typedef struct {
     SDL_Renderer *r;
@@ -82,8 +83,11 @@ typedef struct {
     double   eq_db[10];
     double   bass_db, treble_db;
     int      drag;           /* 0=-, 1 vol, 2 seek, 3 wf, 9 avg, 10+i fx */
-    double   sp_avg;         /* spectrum smoothing 0..1 (slider) */
-    SDL_Rect avg_r;
+    int      sp_mode;        /* VIZ_EMA or VIZ_BOX */
+    double   sp_avg;         /* EMA slider frac (0 raw .. 1 slow) */
+    double   sp_nfrac;       /* BOX slider frac -> N in 2..64 */
+    double   sp_top;         /* auto-ranged axis top, dB */
+    SDL_Rect avg_r, sp_mode_r;
 } gui;
 
 static const char *const fx_names[8] =
@@ -91,34 +95,13 @@ static const char *const fx_names[8] =
 static const char *const eq_lbl[10] =
     { "31", "63", "125", "250", "500", "1k", "2k", "4k", "8k", "16k" };
 
-static void draw_char(SDL_Renderer *r, int x, int y, unsigned char c,
+static void draw_text(SDL_Renderer *r, int x, int y, const char *s,
                       SDL_Color col) {
-    if (c < 32 || c > 126) c = '?';
-    const unsigned char *g = (const unsigned char *)font8x8_basic[c];
-    SDL_SetRenderDrawColor(r, col.r, col.g, col.b, 255);
-    for (int row = 0; row < 8; row++)
-        for (int bit = 0; bit < 8; bit++)
-            if (g[row] & (1 << bit)) {
-                SDL_Rect px = { x + bit * FS, y + row * FS, FS, FS };
-                SDL_RenderFillRect(r, &px);
-            }
+    text_draw(r, x, y, s, col);
 }
 static void draw_textn(SDL_Renderer *r, int x, int y, const char *s,
                        int maxch, SDL_Color col) {
-    int n = 0;
-    while (*s && n < maxch) {
-        unsigned char c = (unsigned char)*s;
-        if (c >= 0xC0) {                 /* UTF-8 lead: one cell */
-            while ((s[1] & 0xC0) == 0x80) s++;
-            c = '~';
-        } else if (c >= 0x80) { s++; continue; }
-        draw_char(r, x, y, c, col);
-        s++; n++; x += CW;
-    }
-}
-static void draw_text(SDL_Renderer *r, int x, int y, const char *s,
-                      SDL_Color col) {
-    draw_textn(r, x, y, s, 4096, col);
+    text_drawn(r, x, y, s, maxch, col);
 }
 
 static const SDL_Color FG  = { 220, 220, 214, 255 };
@@ -219,52 +202,91 @@ static void draw_instruments(gui *g, const player_status *ps) {
                            g->wf_r.y + g->wf_r.h);
     }
 
-    /* spectrum: clean (dim) under processed (accent), log-x, 0..-90 dB */
+    /* spectrum: clean (dim) under processed (accent); log-x; the dB
+     * axis auto-ranges to the material (slow peak follower), fixed
+     * 80 dB span, gridlines every 20 dB. Controls live in a lane
+     * under the plot, not on it. */
     fill(r, g->sp_r, (SDL_Color){ 22, 22, 28, 255 });
+    int lane_h = CH + 8;
+    SDL_Rect plot = { g->sp_r.x, g->sp_r.y, g->sp_r.w,
+                      g->sp_r.h - lane_h };
     if (g->v.sp_primed && g->tap_rate > 0) {
         double f_lo = 30.0, f_hi = g->tap_rate / 2.0;
         double lr = log(f_hi / f_lo);
-        int px_last_c = -1, py_last_c = 0, px_last_p = -1,
-            py_last_p = 0;
+        /* follow the peak */
+        double mxdb = -120.0;
+        for (int i = 1; i < VIZ_FFT / 2; i++) {
+            double d1 = 10.0 * log10(g->v.sp_clean[i] + 1e-12);
+            double d2 = 10.0 * log10(g->v.sp_proc[i] + 1e-12);
+            if (d1 > mxdb) mxdb = d1;
+            if (d2 > mxdb) mxdb = d2;
+        }
+        double want = mxdb + 4.0;
+        if (want < -40.0) want = -40.0;
+        if (want > 5.0) want = 5.0;
+        if (g->sp_top == 0.0) g->sp_top = want;
+        g->sp_top += (want > g->sp_top ? 0.5 : 0.05) *
+                     (want - g->sp_top);
+        double top = g->sp_top, bot_db = top - 80.0;
+        /* grid */
+        for (double gv = floor(top / 20.0) * 20.0; gv > bot_db;
+             gv -= 20.0) {
+            int gy = plot.y +
+                     (int)((top - gv) / 80.0 * plot.h);
+            if (gy <= plot.y || gy >= plot.y + plot.h) continue;
+            SDL_SetRenderDrawColor(r, 44, 44, 54, 255);
+            SDL_RenderDrawLine(r, plot.x, gy, plot.x + plot.w, gy);
+            char gl[12];
+            snprintf(gl, sizeof gl, "%+.0f", gv);
+            draw_text(r, plot.x + plot.w - 4 * CW - 4, gy + 1, gl,
+                      (SDL_Color){ 80, 80, 92, 255 });
+        }
+        int pxc = -1, pyc = 0, pxp = -1, pyp = 0;
         for (int i = 1; i < VIZ_FFT / 2; i++) {
             double fq = (double)i * g->tap_rate / VIZ_FFT;
             if (fq < f_lo) continue;
-            int x = g->sp_r.x +
-                    (int)(log(fq / f_lo) / lr * g->sp_r.w);
+            int x = plot.x + (int)(log(fq / f_lo) / lr * plot.w);
             double dbc = 10.0 * log10(g->v.sp_clean[i] + 1e-12);
             double dbp = 10.0 * log10(g->v.sp_proc[i] + 1e-12);
-            int yc = g->sp_r.y +
-                     (int)((0.0 - dbc) / 90.0 * g->sp_r.h);
-            int yp = g->sp_r.y +
-                     (int)((0.0 - dbp) / 90.0 * g->sp_r.h);
-            if (yc < g->sp_r.y) yc = g->sp_r.y;
-            if (yc > g->sp_r.y + g->sp_r.h)
-                yc = g->sp_r.y + g->sp_r.h;
-            if (yp < g->sp_r.y) yp = g->sp_r.y;
-            if (yp > g->sp_r.y + g->sp_r.h)
-                yp = g->sp_r.y + g->sp_r.h;
-            if (px_last_c >= 0) {
+            int yc = plot.y + (int)((top - dbc) / 80.0 * plot.h);
+            int yp = plot.y + (int)((top - dbp) / 80.0 * plot.h);
+            if (yc < plot.y) yc = plot.y;
+            if (yc > plot.y + plot.h) yc = plot.y + plot.h;
+            if (yp < plot.y) yp = plot.y;
+            if (yp > plot.y + plot.h) yp = plot.y + plot.h;
+            if (pxc >= 0) {
                 SDL_SetRenderDrawColor(r, DIM.r, DIM.g, DIM.b, 255);
-                SDL_RenderDrawLine(r, px_last_c, py_last_c, x, yc);
+                SDL_RenderDrawLine(r, pxc, pyc, x, yc);
             }
-            if (px_last_p >= 0) {
+            if (pxp >= 0) {
                 SDL_SetRenderDrawColor(r, ACC.r, ACC.g, ACC.b, 255);
-                SDL_RenderDrawLine(r, px_last_p, py_last_p, x, yp);
+                SDL_RenderDrawLine(r, pxp, pyp, x, yp);
             }
-            px_last_c = x; py_last_c = yc;
-            px_last_p = x; py_last_p = yp;
+            pxc = x; pyc = yc; pxp = x; pyp = yp;
         }
     } else
-        draw_text(r, g->sp_r.x + pad, g->sp_r.y + g->sp_r.h / 2,
+        draw_text(r, plot.x + pad, plot.y + plot.h / 2,
                   "(spectrum: play something)", DIM);
-    /* averaging control, resident in the spectrum box */
-    g->avg_r = (SDL_Rect){ g->sp_r.x + g->sp_r.w - 14 * CW,
-                           g->sp_r.y + g->sp_r.h - CH - 4, 10 * CW, 6 };
-    draw_text(r, g->avg_r.x - 4 * CW, g->avg_r.y - 4, "avg", DIM);
+    /* control lane */
+    int ly = g->sp_r.y + g->sp_r.h - lane_h + 3;
+    g->sp_mode_r = (SDL_Rect){ g->sp_r.x + 4, ly, 5 * CW, CH + 2 };
+    fill(r, g->sp_mode_r, ROW);
+    draw_text(r, g->sp_mode_r.x + CW / 2, ly + 1,
+              g->sp_mode == VIZ_BOX ? "avgN" : "ema", HL);
+    g->avg_r = (SDL_Rect){ g->sp_mode_r.x + g->sp_mode_r.w + 2 * CW,
+                           ly + CH / 2 - 2, 14 * CW, 6 };
     fill(r, g->avg_r, ROW);
+    double lf = g->sp_mode == VIZ_BOX ? g->sp_nfrac : g->sp_avg;
     SDL_Rect af = g->avg_r;
-    af.w = (int)(af.w * g->sp_avg);
+    af.w = (int)(af.w * lf);
     fill(r, af, HL);
+    char lv[24];
+    if (g->sp_mode == VIZ_BOX)
+        snprintf(lv, sizeof lv, "N=%d",
+                 2 + (int)(g->sp_nfrac * 62.0 + 0.5));
+    else
+        snprintf(lv, sizeof lv, "a=%.2f", 1.0 - 0.95 * g->sp_avg);
+    draw_text(r, g->avg_r.x + g->avg_r.w + CW, ly + 1, lv, DIM);
 
     /* effects: mode buttons + the active mode's controls */
     fill(r, g->fx_r, (SDL_Color){ 20, 20, 26, 255 });
@@ -608,8 +630,12 @@ static void handle(gui *g, const SDL_Event *e) {
     case SDL_MOUSEMOTION: {
         if (!g->drag) break;
         int mx = e->motion.x;
-        if (g->drag == 9)
-            g->sp_avg = slider_frac(g->avg_r, mx);
+        if (g->drag == 9) {
+            if (g->sp_mode == VIZ_BOX)
+                g->sp_nfrac = slider_frac(g->avg_r, mx);
+            else
+                g->sp_avg = slider_frac(g->avg_r, mx);
+        }
         else if (g->drag == 1)
             dsp_set_gain(player_dsp(g->pl),
                          2.0 * (mx - g->vol_r.x) /
@@ -654,8 +680,13 @@ static void handle(gui *g, const SDL_Event *e) {
         int mx = e->button.x, my = e->button.y;
         SDL_Point p = { mx, my };
         if (g->overlay) { g->overlay = 0; break; }
-        if (g->instr_on && SDL_PointInRect(&p, &g->avg_r)) {
-            g->sp_avg = slider_frac(g->avg_r, mx);
+        if (g->instr_on && SDL_PointInRect(&p, &g->sp_mode_r)) {
+            g->sp_mode = g->sp_mode == VIZ_BOX ? VIZ_EMA : VIZ_BOX;
+        } else if (g->instr_on && SDL_PointInRect(&p, &g->avg_r)) {
+            if (g->sp_mode == VIZ_BOX)
+                g->sp_nfrac = slider_frac(g->avg_r, mx);
+            else
+                g->sp_avg = slider_frac(g->avg_r, mx);
             g->drag = 9;
         } else if (g->instr_on && SDL_PointInRect(&p, &g->wf_r)) {
             player_status ps;
@@ -773,8 +804,11 @@ static void tick(gui *g) {
         g->tap_rate = rate;
         double gn = dsp_gain(player_dsp(g->pl));
         double comp = gn > 1e-4 ? 1.0 / gn : 1.0;
+        double prm = g->sp_mode == VIZ_BOX
+                   ? 2.0 + g->sp_nfrac * 62.0
+                   : 1.0 - 0.95 * g->sp_avg;
         viz_fold_spectrum(&g->v, g->tap_c, g->tap_p, VIZ_FFT,
-                          1.0 - 0.95 * g->sp_avg, comp);
+                          g->sp_mode, prm, comp);
     }
 }
 
@@ -936,6 +970,7 @@ static int selftest(gui *g) {
         fx_apply(g);
         dsp_set_gain(player_dsp(g->pl), 0.4);
         g->v.sp_primed = 0;
+        g->sp_mode = VIZ_EMA;
         g->sp_avg = 0.0;                /* raw frames for the check */
         push_key(SDLK_RETURN, 0);       /* queue view: restart track */
         pump(g);
@@ -964,6 +999,29 @@ static int selftest(gui *g) {
         CHK("F2 hides instruments", g->instr_on == 0);
         push_key(SDLK_F2, 0);
         pump(g);
+        /* boxcar: mean of the last N frames, verified on synthetic
+         * sines of two amplitudes (power ratio 1 : 0.25) */
+        {
+            static float s1[VIZ_FFT], s2[VIZ_FFT];
+            for (int i = 0; i < VIZ_FFT; i++) {
+                s1[i] = (float)sin(2.0 * M_PI * 100.0 * i / VIZ_FFT);
+                s2[i] = 0.5f * s1[i];
+            }
+            viz w;
+            viz_init(&w);
+            for (int k = 0; k < 3; k++)
+                viz_fold_spectrum(&w, s1, s1, VIZ_FFT, VIZ_BOX, 4,
+                                  1.0);
+            viz_fold_spectrum(&w, s2, s2, VIZ_FFT, VIZ_BOX, 4, 1.0);
+            int pk = 1;
+            for (int i = 2; i < VIZ_FFT / 2; i++)
+                if (w.sp_clean[i] > w.sp_clean[pk]) pk = i;
+            /* mean over {1,1,1,0.25} of full-scale power = 0.8125 */
+            CHK("boxcar mean is the plain mean",
+                pk == 100 && w.sp_clean[pk] > 0.77 &&
+                w.sp_clean[pk] < 0.86);
+            viz_shutdown(&w);
+        }
     }
     push_key(SDLK_TAB, 0);          /* back to query focus */
     push_key(SDLK_u, KMOD_LCTRL);
@@ -1022,12 +1080,17 @@ int main(int argc, char **argv) {
     g.r = SDL_CreateRenderer(g.win, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!g.r) g.r = SDL_CreateRenderer(g.win, -1, 0);
+    if (text_init(g.r, 17.0f)) {
+        fprintf(stderr, "tagplay-gui: font atlas failed\n");
+        return 1;
+    }
     g.tb = &tb;
     g.pl = player_create(&tb);
     browser_init(&g.b, &tb, console_init(g.pl));
     viz_init(&g.v);
     g.instr_on = 1;
-    g.sp_avg = 0.68;   /* the old fixed feel */
+    g.sp_avg = 0.68;   /* EMA default: the old fixed feel */
+    g.sp_nfrac = 0.22; /* boxcar default: N = 16 */
     for (int i = 0; i < 8; i++) g.fx_amt[i] = 0.5f;
     SDL_StartTextInput();
 
@@ -1051,6 +1114,7 @@ int main(int argc, char **argv) {
     if (g.overlay_art) SDL_DestroyTexture(g.overlay_art);
     player_destroy(g.pl);
     browser_free(&g.b);
+    text_shutdown();
     SDL_DestroyRenderer(g.r);
     SDL_DestroyWindow(g.win);
     SDL_Quit();
