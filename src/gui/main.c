@@ -183,16 +183,21 @@ static void fx_slide(gui *g, int i, double f) {
 
 static void slider(gui *g, SDL_Rect r, const char *lbl, double frac,
                    char *vtxt) {
+    /* reserve exactly what the label needs and a fixed value field,
+     * so the track can never paint over either */
+    int lw = ((int)strlen(lbl) + 1) * CW;
+    int vw = (vtxt ? (int)strlen(vtxt) + 1 : 0) * CW;
+    if (vw < 8 * CW) vw = 8 * CW;
+    SDL_Rect tr = { r.x + lw, r.y + CH / 2 - 2, r.w - lw - vw, 6 };
+    if (tr.w < 3 * CW) tr.w = 3 * CW;   /* degenerate-width guard */
     draw_text(g->r, r.x, r.y - 2, lbl, DIM);
-    SDL_Rect tr = { r.x + 5 * CW, r.y + CH / 2 - 2, r.w - 5 * CW - 7 * CW,
-                    6 };
     fill(g->r, tr, ROW);
     SDL_Rect f = tr;
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
     f.w = (int)(tr.w * frac);
     fill(g->r, f, ACC);
-    if (vtxt) draw_text(g->r, tr.x + tr.w + CW, r.y - 2, vtxt, FG);
+    if (vtxt) draw_text(g->r, tr.x + tr.w + CW / 2, r.y - 2, vtxt, FG);
     g->fx_sl[g->fx_sl_n] = tr;
     g->fx_sl_n++;
 }
