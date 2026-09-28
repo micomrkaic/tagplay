@@ -152,6 +152,35 @@ static void fx_apply(gui *g) {
     else                      dsp_set_mode(c, m, g->fx_amt[g->fx_mode]);
 }
 
+static void fx_slide(gui *g, int i, double f) {
+    if (g->fx_mode >= 1 && g->fx_mode <= 5) {
+        const char *md = fx_names[g->fx_mode];
+        if (i == 0) {                 /* the macro knob re-derives */
+            g->fx_amt[g->fx_mode] = (float)f;
+            dsp_set_mode(player_dsp(g->pl), md,
+                         g->fx_amt[g->fx_mode]);
+            return;
+        }
+        int pi = i - 1;
+        const char *nm; const char *un;
+        double lo, hi;
+        int ii, il;
+        if (dsp_param_info(md, pi, &nm, &un, &lo, &hi, &ii, &il))
+            return;
+        double v = il ? lo * pow(hi / lo, f) : lo + f * (hi - lo);
+        dsp_param_set(player_dsp(g->pl), md, pi, v);
+        return;
+    }
+    if (g->fx_mode == 6) {
+        g->eq_db[i] = f * 36.0 - 18.0;
+        fx_apply(g);
+    } else if (g->fx_mode == 7) {
+        if (i == 0) g->bass_db = f * 24.0 - 12.0;
+        else        g->treble_db = f * 24.0 - 12.0;
+        fx_apply(g);
+    }
+}
+
 static void slider(gui *g, SDL_Rect r, const char *lbl, double frac,
                    char *vtxt) {
     draw_text(g->r, r.x, r.y - 2, lbl, DIM);
@@ -307,9 +336,34 @@ static void draw_instruments(gui *g, const player_status *ps) {
     g->fx_sl_n = 0;
     char vt[24];
     if (g->fx_mode >= 1 && g->fx_mode <= 5) {
+        /* the macro knob, then the mode's true parameters (live from
+         * the chain, so an amount morph moves every slider) */
         snprintf(vt, sizeof vt, "%.2f", g->fx_amt[g->fx_mode]);
         slider(g, (SDL_Rect){ g->fx_r.x + 6, sy, g->fx_r.w - 12, CH },
                "amt", g->fx_amt[g->fx_mode], vt);
+        const char *md = fx_names[g->fx_mode];
+        int np = dsp_param_count(md);
+        int colw = (g->fx_r.w - 12) / 2;
+        int py0 = sy + CH + 8;
+        for (int i = 0; i < np && i < 12; i++) {
+            const char *nm, *un;
+            double lo, hi, cur = 0;
+            int ii, il;
+            dsp_param_info(md, i, &nm, &un, &lo, &hi, &ii, &il);
+            dsp_param_get(player_dsp(g->pl), md, i, &cur);
+            double fr = il
+                ? log(cur / lo) / log(hi / lo)
+                : (cur - lo) / (hi - lo);
+            if (ii) snprintf(vt, sizeof vt, "%d%s", (int)cur, un);
+            else if (fabs(cur) >= 100)
+                snprintf(vt, sizeof vt, "%.0f%s", cur, un);
+            else snprintf(vt, sizeof vt, "%.2g%s", cur, un);
+            int col = i / 6, row = i % 6;
+            slider(g, (SDL_Rect){ g->fx_r.x + 6 + col * colw,
+                                  py0 + row * (CH + 6),
+                                  colw - 6, CH },
+                   nm, fr, vt);
+        }
     } else if (g->fx_mode == 6) {
         int colw = (g->fx_r.w - 12) / 2;
         for (int i = 0; i < 10; i++) {
@@ -413,7 +467,7 @@ static void frame(gui *g) {
               g->b.m.parse_ok ? DIM : HL);
 
     int top = pad + CH + 14;
-    int instr_h = g->instr_on ? 56 + 194 + 12 : 0;
+    int instr_h = g->instr_on ? 56 + 224 + 12 : 0;
     int bot = g->h - 4 * CH - 26 - instr_h;
     g->list_top = top;
     g->row_h = CH + 6;
@@ -499,9 +553,9 @@ static void frame(gui *g) {
         int iy = g->h - 4 * CH - 14 - instr_h + 4;
         g->wf_r = (SDL_Rect){ pad, iy, g->w - 2 * pad, 56 };
         int sw = (g->w - 2 * pad) * 58 / 100;
-        g->sp_r = (SDL_Rect){ pad, iy + 60, sw, 190 };
+        g->sp_r = (SDL_Rect){ pad, iy + 60, sw, 220 };
         g->fx_r = (SDL_Rect){ pad + sw + 8, iy + 60,
-                              g->w - 2 * pad - sw - 8, 190 };
+                              g->w - 2 * pad - sw - 8, 220 };
         draw_instruments(g, &ps);
     }
 
@@ -651,18 +705,8 @@ static void handle(gui *g, const SDL_Event *e) {
             }
         } else if (g->drag >= 10) {
             int i = g->drag - 10;
-            if (i < g->fx_sl_n) {
-                double f = slider_frac(g->fx_sl[i], mx);
-                if (g->fx_mode >= 1 && g->fx_mode <= 5)
-                    g->fx_amt[g->fx_mode] = (float)f;
-                else if (g->fx_mode == 6)
-                    g->eq_db[i] = f * 36.0 - 18.0;
-                else if (g->fx_mode == 7) {
-                    if (i == 0) g->bass_db = f * 24.0 - 12.0;
-                    else        g->treble_db = f * 24.0 - 12.0;
-                }
-                fx_apply(g);
-            }
+            if (i < g->fx_sl_n)
+                fx_slide(g, i, slider_frac(g->fx_sl[i], mx));
         }
         break;
     }
@@ -708,16 +752,7 @@ static void handle(gui *g, const SDL_Event *e) {
                     my >= g->fx_sl[i].y - 6 &&
                     my <= g->fx_sl[i].y + g->fx_sl[i].h + 6) {
                     g->drag = 10 + i;
-                    double f = slider_frac(g->fx_sl[i], mx);
-                    if (g->fx_mode >= 1 && g->fx_mode <= 5)
-                        g->fx_amt[g->fx_mode] = (float)f;
-                    else if (g->fx_mode == 6)
-                        g->eq_db[i] = f * 36.0 - 18.0;
-                    else if (g->fx_mode == 7) {
-                        if (i == 0) g->bass_db = f * 24.0 - 12.0;
-                        else        g->treble_db = f * 24.0 - 12.0;
-                    }
-                    fx_apply(g);
+                    fx_slide(g, i, slider_frac(g->fx_sl[i], mx));
                     return;
                 }
         } else if (SDL_PointInRect(&p, &g->btn_play))
@@ -999,6 +1034,57 @@ static int selftest(gui *g) {
         CHK("F2 hides instruments", g->instr_on == 0);
         push_key(SDLK_F2, 0);
         pump(g);
+        /* granular registry: names round-trip, values clamp, the
+         * command language reaches the same knobs */
+        {
+            dsp_set_mode(player_dsp(g->pl), "vinyl", 0.5);
+            CHK("registry: vinyl exposes its true parameters",
+                dsp_param_count("vinyl") >= 8);
+            dsp_param_set_name(player_dsp(g->pl), "wow", 12.5);
+            double wv = 0;
+            const char *nm;
+            for (int i = 0; i < dsp_param_count("vinyl"); i++)
+                if (!dsp_param_info("vinyl", i, &nm, NULL, NULL,
+                                    NULL, NULL, NULL) &&
+                    !strcmp(nm, "wow"))
+                    dsp_param_get(player_dsp(g->pl), "vinyl", i,
+                                  &wv);
+            CHK("registry: set-by-name round-trips",
+                wv > 12.49 && wv < 12.51);
+            dsp_param_set_name(player_dsp(g->pl), "wow", 9999.0);
+            for (int i = 0; i < dsp_param_count("vinyl"); i++)
+                if (!dsp_param_info("vinyl", i, &nm, NULL, NULL,
+                                    NULL, NULL, NULL) &&
+                    !strcmp(nm, "wow"))
+                    dsp_param_get(player_dsp(g->pl), "vinyl", i,
+                                  &wv);
+            CHK("registry: values clamp to range", wv <= 30.0);
+            /* the shared command path reaches the same knob */
+            push_key(SDLK_TAB, 0);      /* queue -> query */
+            push_key(SDLK_u, KMOD_LCTRL);
+            push_text(":dsp set hiss -42");
+            push_key(SDLK_RETURN, 0);
+            pump(g);
+            double hv = 0;
+            for (int i = 0; i < dsp_param_count("vinyl"); i++)
+                if (!dsp_param_info("vinyl", i, &nm, NULL, NULL,
+                                    NULL, NULL, NULL) &&
+                    !strcmp(nm, "hiss"))
+                    dsp_param_get(player_dsp(g->pl), "vinyl", i,
+                                  &hv);
+            CHK("':dsp set' drives the same registry",
+                hv > -42.01 && hv < -41.99);
+            /* the macro knob re-derives over manual tweaks */
+            dsp_set_mode(player_dsp(g->pl), "vinyl", 1.0);
+            for (int i = 0; i < dsp_param_count("vinyl"); i++)
+                if (!dsp_param_info("vinyl", i, &nm, NULL, NULL,
+                                    NULL, NULL, NULL) &&
+                    !strcmp(nm, "hiss"))
+                    dsp_param_get(player_dsp(g->pl), "vinyl", i,
+                                  &hv);
+            CHK("amount is the macro: rederives manual tweaks",
+                hv > -42.0 + 0.5 || hv < -42.0 - 0.5);
+        }
         /* boxcar: mean of the last N frames, verified on synthetic
          * sines of two amplitudes (power ratio 1 : 0.25) */
         {

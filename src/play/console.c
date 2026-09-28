@@ -634,6 +634,43 @@ int console_command(void *ui, struct browser *b, const char *cmd) {
                      "bt BASS TREBLE | eq g1..g10 (dB)");
             return 1;
         }
+        if (!strcmp(name, "set")) {
+            char pname[32];
+            double pv;
+            if (sscanf(cmd + 3, "%*s %31s %lf", pname, &pv) != 2) {
+                snprintf(b->msg, sizeof b->msg,
+                         "usage: :dsp set NAME VALUE  (see :dsp params)");
+                return 1;
+            }
+            if (dsp_param_set_name(player_dsp(u->pl), pname, pv) == 0)
+                snprintf(b->msg, sizeof b->msg, "dsp %s: %s=%g",
+                         dsp_mode_name(player_dsp(u->pl)), pname, pv);
+            else
+                snprintf(b->msg, sizeof b->msg,
+                         "dsp: no parameter '%s' in mode %s", pname,
+                         dsp_mode_name(player_dsp(u->pl)));
+            return 1;
+        }
+        if (!strcmp(name, "params")) {
+            const char *md = dsp_mode_name(player_dsp(u->pl));
+            int n = dsp_param_count(md);
+            size_t off = (size_t)snprintf(b->msg, sizeof b->msg,
+                                          "%s:", md);
+            for (int i = 0; i < n && off < sizeof b->msg - 24; i++) {
+                const char *nm, *un;
+                double cur = 0;
+                dsp_param_info(md, i, &nm, &un, NULL, NULL, NULL,
+                               NULL);
+                dsp_param_get(player_dsp(u->pl), md, i, &cur);
+                off += (size_t)snprintf(b->msg + off,
+                                        sizeof b->msg - off,
+                                        " %s=%g%s", nm, cur, un);
+            }
+            if (!n)
+                snprintf(b->msg, sizeof b->msg,
+                         "dsp %s: no parameters", md);
+            return 1;
+        }
         if (!strcmp(name, "eq")) {
             double g[10] = { 0 };
             int n = 0;

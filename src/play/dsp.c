@@ -459,3 +459,132 @@ void dsp_process(dsp_chain *c, float *buf, long frames) {
     c->emitted += (uint64_t)frames;
     pthread_mutex_unlock(&c->mu);
 }
+
+/* ---- the parameter registry ---------------------------------------- */
+
+typedef struct {
+    dsp_mode    mode;
+    const char *name, *unit;
+    double      lo, hi;
+    size_t      off;          /* into dsp_chain */
+    int         is_int, is_log;
+} pdesc;
+
+#define P(m, n, u, lo, hi, field, ii, il) \
+    { m, n, u, lo, hi, offsetof(dsp_chain, field), ii, il }
+
+static const pdesc PTAB[] = {
+    P(M_TUBE,   "shape",   "",    0,     2,    wsp.shape,       1, 0),
+    P(M_TUBE,   "drive",   "",    0.05,  8.0,  wsp.drive,       0, 0),
+    P(M_TUBE,   "bias",    "",    0.0,   1.0,  wsp.bias,        0, 0),
+    P(M_TUBE,   "h2a",     "",    0.0,   1.5,  wsp.h2,          0, 0),
+    P(M_TUBE,   "os",      "x",   1,     4,    os,              1, 0),
+    P(M_VINYL,  "wow",     "c",   0.0,  30.0,  vp.wow_cents,    0, 0),
+    P(M_VINYL,  "wowrate", "Hz",  0.1,   5.0,  vp.wow_rate,     0, 0),
+    P(M_VINYL,  "drift",   "c",   0.0,  30.0,  vp.drift_cents,  0, 0),
+    P(M_VINYL,  "crackle", "/s",  0.0,  50.0,  vp.crackle_per_s,0, 0),
+    P(M_VINYL,  "crackdb", "dB", -80.0,  0.0,  vp.crackle_db,   0, 0),
+    P(M_VINYL,  "hiss",    "dB", -90.0,-20.0,  vp.hiss_db,      0, 0),
+    P(M_VINYL,  "lp",      "Hz", 1000, 16000,  vp.lp_hz,        0, 1),
+    P(M_VINYL,  "hp",      "Hz",   10,   400,  vp.hp_hz,        0, 1),
+    P(M_TAPE,   "wow",     "c",   0.0,  30.0,  tp.wow_cents,    0, 0),
+    P(M_TAPE,   "wowrate", "Hz",  0.1,   5.0,  tp.wow_rate,     0, 0),
+    P(M_TAPE,   "flutter", "c",   0.0,  20.0,  tp.flutter_cents,0, 0),
+    P(M_TAPE,   "flutrate","Hz",  2.0,  20.0,  tp.flutter_rate, 0, 0),
+    P(M_TAPE,   "drift",   "c",   0.0,  30.0,  tp.drift_cents,  0, 0),
+    P(M_TAPE,   "hiss",    "dB", -90.0,-20.0,  tp.hiss_db,      0, 0),
+    P(M_TAPE,   "bump",    "dB",  0.0,  12.0,  tp.bump_db,      0, 0),
+    P(M_TAPE,   "bumphz",  "Hz",   20,   300,  tp.bump_hz,      0, 1),
+    P(M_TAPE,   "hfloss",  "",    0.0,   1.0,  tp.hf_loss,      0, 0),
+    P(M_TAPE,   "lp",      "Hz", 1000, 16000,  tp.lp_hz,        0, 1),
+    P(M_SHELLAC,"era",     "",    0,     1,    shp.era,         1, 0),
+    P(M_SHELLAC,"wow",     "c",   0.0,  40.0,  shp.wow_cents,   0, 0),
+    P(M_SHELLAC,"hiss",    "dB", -70.0,-10.0,  shp.hiss_db,     0, 0),
+    P(M_SHELLAC,"crackle", "/s",  0.0, 100.0,  shp.crackle_per_s,0,0),
+    P(M_SHELLAC,"crackdb", "dB", -60.0,  0.0,  shp.crackle_db,  0, 0),
+    P(M_AM,     "bw",      "Hz", 1500,  8000,  ap.bw_hz,        0, 1),
+    P(M_AM,     "hp",      "Hz",   50,   500,  ap.hp_hz,        0, 1),
+    P(M_AM,     "depth",   "",    0.2,   1.4,  ap.depth,        0, 0),
+    P(M_AM,     "comp",    "",    0.0,   1.0,  ap.comp,         0, 0),
+    P(M_AM,     "static",  "/s",  0.0,  20.0,  ap.static_per_s, 0, 0),
+    P(M_AM,     "statdb",  "dB", -60.0,  0.0,  ap.static_db,    0, 0),
+    P(M_AM,     "hiss",    "dB", -80.0,-20.0,  ap.hiss_db,      0, 0),
+    P(M_AM,     "fade",    "dB",  0.0,  30.0,  ap.fade_db,      0, 0),
+};
+#undef P
+#define NPTAB (sizeof PTAB / sizeof PTAB[0])
+
+static dsp_mode mode_of(const char *mode) {
+    if (!strcmp(mode, "tube")) return M_TUBE;
+    if (!strcmp(mode, "tape")) return M_TAPE;
+    if (!strcmp(mode, "vinyl")) return M_VINYL;
+    if (!strcmp(mode, "shellac")) return M_SHELLAC;
+    if (!strcmp(mode, "am")) return M_AM;
+    return M_OFF;
+}
+
+static const pdesc *pfind(const char *mode, int i) {
+    dsp_mode m = mode_of(mode);
+    int k = 0;
+    for (size_t j = 0; j < NPTAB; j++)
+        if (PTAB[j].mode == m && k++ == i) return &PTAB[j];
+    return NULL;
+}
+
+int dsp_param_count(const char *mode) {
+    dsp_mode m = mode_of(mode);
+    int n = 0;
+    for (size_t j = 0; j < NPTAB; j++)
+        if (PTAB[j].mode == m) n++;
+    return n;
+}
+
+int dsp_param_info(const char *mode, int i, const char **name,
+                   const char **unit, double *lo, double *hi,
+                   int *is_int, int *is_log) {
+    const pdesc *p = pfind(mode, i);
+    if (!p) return -1;
+    if (name) *name = p->name;
+    if (unit) *unit = p->unit;
+    if (lo) *lo = p->lo;
+    if (hi) *hi = p->hi;
+    if (is_int) *is_int = p->is_int;
+    if (is_log) *is_log = p->is_log;
+    return 0;
+}
+
+int dsp_param_get(dsp_chain *c, const char *mode, int i, double *out) {
+    const pdesc *p = pfind(mode, i);
+    if (!p || !out) return -1;
+    pthread_mutex_lock(&c->mu);
+    if (p->is_int) *out = *(int *)((char *)c + p->off);
+    else           *out = *(double *)((char *)c + p->off);
+    pthread_mutex_unlock(&c->mu);
+    return 0;
+}
+
+int dsp_param_set(dsp_chain *c, const char *mode, int i, double v) {
+    const pdesc *p = pfind(mode, i);
+    if (!p) return -1;
+    if (v < p->lo) v = p->lo;
+    if (v > p->hi) v = p->hi;
+    pthread_mutex_lock(&c->mu);
+    if (p->is_int) *(int *)((char *)c + p->off) = (int)(v + 0.5);
+    else           *(double *)((char *)c + p->off) = v;
+    pthread_mutex_unlock(&c->mu);
+    return 0;
+}
+
+int dsp_param_set_name(dsp_chain *c, const char *name, double v) {
+    const char *mode = dsp_mode_name(c);
+    int n = dsp_param_count(mode);
+    for (int i = 0; i < n; i++) {
+        const char *nm;
+        if (dsp_param_info(mode, i, &nm, NULL, NULL, NULL, NULL,
+                           NULL) == 0 && !strcmp(nm, name))
+            return dsp_param_set(c, mode, i, v);
+    }
+    return -1;
+}
+
+double dsp_amount(const dsp_chain *c) { return c->amount; }

@@ -45,6 +45,23 @@ int  dsp_set_eq(dsp_chain *c, const double *db, int n);
 int  dsp_set_tone(dsp_chain *c, double bass_db, double treble_db);
 const char *dsp_mode_name(const dsp_chain *c);
 
+/* ---- granular parameter access (the audiotard bench) -------------
+ * Each character mode exposes its true parameters by name: the
+ * 'amount' macro derives them all (and overwrites manual tweaks);
+ * setting one directly goes manual until the next amount move. The
+ * registry is static -- count/info need no chain. Sets clamp, hold
+ * the chain mutex, preserve filter state and the RMS match (no
+ * clicks), and return 0 on success. */
+int  dsp_param_count(const char *mode);
+int  dsp_param_info(const char *mode, int i, const char **name,
+                    const char **unit, double *lo, double *hi,
+                    int *is_int, int *is_log);
+int  dsp_param_get(dsp_chain *c, const char *mode, int i, double *out);
+int  dsp_param_set(dsp_chain *c, const char *mode, int i, double v);
+/* by name, against the chain's CURRENT mode (for ':dsp set') */
+int  dsp_param_set_name(dsp_chain *c, const char *name, double v);
+double dsp_amount(const dsp_chain *c);
+
 /* in-place on interleaved float32 */
 void dsp_process(dsp_chain *c, float *buf, long frames);
 
