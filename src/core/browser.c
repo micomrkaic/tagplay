@@ -461,51 +461,54 @@ static void list_all(browser *st) {
     browser_raw_on();
 }
 
+const char *const BROWSER_HELP =
+    "Query syntax:\n"
+    "  bare words          substring match on any field (implicit AND)\n"
+    "  field ~ \"regex\"     PCRE2, case-insensitive\n"
+    "  field = value       exact (case-insensitive); != for negation\n"
+    "  year<1990 length>=3:00 rate=96000   numeric comparisons\n"
+    "  & | ! ( )           boolean operators; ',' = '&'\n"
+    "  fields: any tag key + path format length rate year track disc\n"
+    "Commands:\n"
+    "  Enter               play current results (replaces queue)\n"
+    "  :ls                 list all matches\n"
+    "  :p  :n  :b  :stop   pause/resume, next, prev, stop\n"
+    "  Ctrl-P/N/B          same, without clearing the query\n"
+    "  Tab                 cycles query -> list -> queue view -> query\n"
+    "  queue view          shows what's playing: j/k move, Enter jumps,\n"
+    "                      Space pause, left/right seek 10s, r restart,\n"
+    "                      s stop, J/K reorder the queue, :save keeps it\n"
+    "  list mode           j/k/arrows move, Space toggles [x],\n"
+    "                      a adds all matches, i inverts, c clears, Enter plays;\n"
+    "                      t shows every tag on the cursored track (also in\n"
+    "                      queue view) — the answer to 'which field is that in?'\n"
+    "  :save name          save selection (or matches) as m3u playlist\n"
+    "  :load name          load playlist into selection\n"
+    "  :lists              show saved playlists    :clear  drop selection\n"
+    "  :seek 1:23          seek in current track\n"
+    "  :vol 80 | :vol +3    volume, absolute or relative percent\n"
+    "  :dsp tube 0.4       tube tape vinyl shellac am + amount; :dsp off\n"
+    "  :dsp bt 6 -3        bass/treble shelves, dB\n"
+    "  :dsp eq 0 3 6 0 ... graphic EQ, 10 octave bands, dB\n"
+    "  :sort f1,-f2        sort results (- = descending)   :sort  clears\n"
+    "  :sel                show only the marked tracks, in playlist order,\n"
+    "                      for editing (Space unmarks); Enter plays them\n"
+    "  :group album        group matches under dim headers, disc/track order\n"
+    "                      inside; any tag works (:group composer); :group off\n"
+    "  :cols +year -album  toggle row fields (album year genre fmt dur track);\n"
+    "                      settings persist in ~/.config/tagplay/config\n"
+    "  :stats              tag key frequency\n"
+    "  :rescan             (restart with same args instead, for now)\n"
+    "  :q                  quit\n"
+    "\n"
+    "[press Enter]";
+
 static void show_help(void) {
     browser_raw_off();
-    printf("\x1b[2J\x1b[H"
-        "Query syntax:\n"
-        "  bare words          substring match on any field (implicit AND)\n"
-        "  field ~ \"regex\"     PCRE2, case-insensitive\n"
-        "  field = value       exact (case-insensitive); != for negation\n"
-        "  year<1990 length>=3:00 rate=96000   numeric comparisons\n"
-        "  & | ! ( )           boolean operators; ',' = '&'\n"
-        "  fields: any tag key + path format length rate year track disc\n"
-        "Commands:\n"
-        "  Enter               play current results (replaces queue)\n"
-        "  :ls                 list all matches\n"
-        "  :p  :n  :b  :stop   pause/resume, next, prev, stop\n"
-        "  Ctrl-P/N/B          same, without clearing the query\n"
-        "  Tab                 cycles query -> list -> queue view -> query\n"
-        "  queue view          shows what's playing: j/k move, Enter jumps,\n"
-        "                      Space pause, left/right seek 10s, r restart,\n"
-        "                      s stop, J/K reorder the queue, :save keeps it\n"
-        "  list mode           j/k/arrows move, Space toggles [x],\n"
-        "                      a adds all matches, i inverts, c clears, Enter plays;\n"
-        "                      t shows every tag on the cursored track (also in\n"
-        "                      queue view) — the answer to 'which field is that in?'\n"
-        "  :save name          save selection (or matches) as m3u playlist\n"
-        "  :load name          load playlist into selection\n"
-        "  :lists              show saved playlists    :clear  drop selection\n"
-        "  :seek 1:23          seek in current track\n"
-        "  :vol 80 | :vol +3    volume, absolute or relative percent\n"
-        "  :dsp tube 0.4       tube tape vinyl shellac am + amount; :dsp off\n"
-        "  :dsp bt 6 -3        bass/treble shelves, dB\n"
-        "  :dsp eq 0 3 6 0 ... graphic EQ, 10 octave bands, dB\n"
-        "  :sort f1,-f2        sort results (- = descending)   :sort  clears\n"
-        "  :sel                show only the marked tracks, in playlist order,\n"
-        "                      for editing (Space unmarks); Enter plays them\n"
-        "  :group album        group matches under dim headers, disc/track order\n"
-        "                      inside; any tag works (:group composer); :group off\n"
-        "  :cols +year -album  toggle row fields (album year genre fmt dur track);\n"
-        "                      settings persist in ~/.config/tagplay/config\n"
-        "  :stats              tag key frequency\n"
-        "  :rescan             (restart with same args instead, for now)\n"
-        "  :q                  quit\n"
-        "\n[press Enter]");
+    printf("\x1b[2J\x1b[H%s", BROWSER_HELP);
     fflush(stdout);
-    getchar();
     browser_raw_on();
+    getchar();
 }
 
 static void show_track_detail(browser *st, size_t ti) {
@@ -625,9 +628,9 @@ static void dbglog(const char *msg) {
     if (!dbg) { char p[64]; snprintf(p, sizeof p, "/tmp/%s.log", APP->name); dbg = fopen(p, "w"); }
     if (dbg) { fprintf(dbg, "%s\n", msg); fflush(dbg); }
 }
-static void handle_command(browser *st, const char *cmd, int *quit) {
+static void handle_command(browser *st, const char *cmd) {
     dbglog(cmd);
-    if (!strcmp(cmd, "q") || !strcmp(cmd, "quit")) { *quit = 1; return; }
+    if (!strcmp(cmd, "q") || !strcmp(cmd, "quit")) { st->req = BREQ_QUIT; return; }
     if (!strncmp(cmd, "sort", 4)) {
         const char *arg = cmd + 4;
         while (*arg == ' ') arg++;
@@ -637,9 +640,9 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
         st->m.sortspec[n] = 0;
         return;
     }
-    if (!strcmp(cmd, "help")) { show_help(); return; }
-    if (!strcmp(cmd, "stats")) { show_stats(st); return; }
-    if (!strcmp(cmd, "ls")) { list_all(st); return; }
+    if (!strcmp(cmd, "help")) { st->req = BREQ_HELP; return; }
+    if (!strcmp(cmd, "stats")) { st->req = BREQ_STATS; return; }
+    if (!strcmp(cmd, "ls")) { st->req = BREQ_LS; return; }
     if (!strncmp(cmd, "save ", 5)) {
         if (st->focus == 2 ||
             (!st->m.sel.len && APP->alt_len && APP->alt_len(st->ui))) {
@@ -738,21 +741,224 @@ static void handle_command(browser *st, const char *cmd, int *quit) {
 
 }
 
+void browser_init(browser *st, const table *tb, void *ui) {
+    memset(st, 0, sizeof *st);
+    st->m.tb = tb;
+    st->ui = ui;
+    vec_init(&st->m.match, sizeof(size_t));
+    vec_init(&st->m.last_good, sizeof(size_t));
+    vec_init(&st->m.sel, sizeof(size_t));
+    vec_init(&st->qview, sizeof(size_t));
+    st->m.parse_ok = 1;
+    config_load(st);
+    bmodel_rerun(&st->m);
+}
+
+void browser_free(browser *st) {
+    vec_free(&st->m.match);
+    vec_free(&st->m.last_good);
+    vec_free(&st->m.sel);
+    vec_free(&st->qview);
+}
+
+/* ---- the face-independent controller ---- */
+
+void browser_key(browser *st, int c) {
+    st->msg[0] = 0; /* feedback lives for one keystroke */
+    if (getenv("TAGPLAY_DEBUG")) {
+        char m2[32];
+        snprintf(m2, sizeof m2, "key %d", c);
+        dbglog(m2);
+    }
+    const vec *shown = bmodel_shown(&st->m);
+        if (c == '\t') { /* Tab: cycle query -> list -> alt view -> query */
+            size_t alen = APP->alt_len ? APP->alt_len(st->ui) : 0;
+            if (st->focus == 0 && shown->len) st->focus = 1;
+            else if ((st->focus == 1 || st->focus == 0) && alen) {
+                st->focus = 2;
+                st->qcur = APP->alt_home ? APP->alt_home(st->ui) : 0;
+            } else st->focus = 0;
+            return;
+        }
+        if (st->focus == 2) { /* ---- alt (app) view ---- */
+            int handled = 1;
+            if (APP->alt_key && APP->alt_key(st->ui, st, c)) {
+                /* app consumed it (transport, reorder, jump, ...) */
+            }
+            else if (c == 'j' || c == K_DOWN) {
+                if (st->qcur + 1 < st->qview.len) st->qcur++;
+            } else if (c == 'k' || c == K_UP) {
+                if (st->qcur > 0) st->qcur--;
+            } else if (c == 'g') st->qcur = 0;
+            else if (c == 'G') st->qcur = st->qview.len ? st->qview.len - 1 : 0;
+            else if (c == K_PGUP || c == K_PGDN) {
+                int rw = term_rows() - 6;
+                if (rw < 1) rw = 1;
+                if (c == K_PGDN) {
+                    st->qcur += (size_t)rw;
+                    if (st->qcur >= st->qview.len)
+                        st->qcur = st->qview.len ? st->qview.len - 1 : 0;
+                } else st->qcur = st->qcur > (size_t)rw
+                               ? st->qcur - (size_t)rw : 0;
+            } else if (c == 't') {
+                if (st->qview.len)
+                {
+                    st->req = BREQ_DETAIL;
+                    st->req_ti = *(size_t *)vec_at(&st->qview,
+                                                   st->qcur);
+                }
+            } else if (c == 'a') {
+                if (st->qview.len)
+                {
+                    st->req = BREQ_ART;
+                    st->req_ti = *(size_t *)vec_at(&st->qview,
+                                                   st->qcur);
+                }
+            } else if (c == K_ESC) {
+                st->focus = 0;
+            } else if (c == ':') {
+                st->m.len = st->m.cur = 0;
+                st->m.buf[0] = 0;
+                bmodel_rerun(&st->m);
+                st->focus = 0;
+                handled = 0;
+            } else if (c >= 32 && c < 127) {
+                st->focus = 0;         /* typing returns to search */
+                handled = 0;
+            }
+            if (handled) return;
+        }
+        if (st->focus == 1) { /* ---- list mode ---- */
+            int handled = 1;
+            if (c == 'j' || c == K_DOWN) { if (st->lcur + 1 < shown->len) st->lcur++; }
+            else if (c == 'k' || c == K_UP) { if (st->lcur > 0) st->lcur--; }
+            else if (c == 'g') st->lcur = 0;
+            else if (c == 'G') st->lcur = shown->len ? shown->len - 1 : 0;
+            else if (c == ' ') {
+                if (shown->len) {
+                    bmodel_sel_toggle(&st->m, *(size_t *)vec_at((vec *)shown, st->lcur));
+                    if (st->lcur + 1 < shown->len) st->lcur++; /* advance */
+                }
+            } else if (c == 'a') {
+                for (size_t i = 0; i < shown->len; i++) {
+                    size_t ti = *(size_t *)vec_at((vec *)shown, i);
+                    if (bmodel_sel_find(&st->m, ti) < 0) vec_push(&st->m.sel, &ti);
+                }
+                snprintf(st->msg, sizeof st->msg, "added %zu -> sel:%zu",
+                         shown->len, st->m.sel.len);
+            } else if (c == 't') {
+                if (shown->len) {
+                    st->req = BREQ_DETAIL;
+                    st->req_ti = *(size_t *)vec_at((vec *)shown, st->lcur);
+                }
+            } else if (c == 'i') {
+                for (size_t i = 0; i < shown->len; i++)
+                    bmodel_sel_toggle(&st->m, *(size_t *)vec_at((vec *)shown, i));
+                snprintf(st->msg, sizeof st->msg, "selection inverted -> sel:%zu",
+                         st->m.sel.len);
+            } else if (c == 'c') {
+                st->m.sel.len = 0;
+                snprintf(st->msg, sizeof st->msg, "selection cleared");
+            } else if (c == K_PGUP || c == K_PGDN) {
+                int rows = term_rows() - 6;
+                if (rows < 1) rows = 1;
+                if (c == K_PGDN) {
+                    st->lcur += (size_t)rows;
+                    if (st->lcur >= shown->len)
+                        st->lcur = shown->len ? shown->len - 1 : 0;
+                } else {
+                    st->lcur = st->lcur > (size_t)rows
+                            ? st->lcur - (size_t)rows : 0;
+                }
+            } else if (c == K_ESC) {
+                st->focus = 0; /* bare Esc back to query */
+            } else if (c == '\r' || c == '\n') {
+                handled = 0;          /* Enter falls through to play */
+            } else if (c == ':') {
+                /* commands from list mode get a fresh line: the query is
+                 * not being edited here, so clearing it is safe */
+                st->m.len = st->m.cur = 0;
+                st->m.buf[0] = 0;
+                bmodel_rerun(&st->m);
+                st->focus = 0;
+                handled = 0;
+            } else if (APP->global_key && APP->global_key(st->ui, st, c)) {
+                /* app key (volume, mute, transport, ...) */
+            } else if (c >= 32 && c < 127) {
+                st->focus = 0;         /* typing returns to the query */
+                handled = 0;
+            } else handled = 0;
+            if (handled) return;
+        }
+        if (c == '\r' || c == '\n') {
+            st->m.buf[st->m.len] = 0;
+            if (st->m.buf[0] == ':') {
+                handle_command(st, st->m.buf + 1);
+                st->m.len = st->m.cur = 0;
+                st->m.buf[0] = 0;
+                bmodel_rerun(&st->m);
+            } else {
+                /* Enter: play the selection if any, else current results */
+                const vec *q = st->m.sel.len ? &st->m.sel
+                             : (st->m.parse_ok ? &st->m.match : &st->m.last_good);
+                if (q->len && APP->on_enter)
+                    APP->on_enter(st->ui, st, q, st->m.sel.len > 0);
+                /* the query is kept: Tab returns to the same filtered
+                 * list, marks in context ('':'' still opens a fresh
+                 * command line from list/alt views) */
+            }
+        } else if (c == 127 || c == 8) { /* backspace */
+            st->m.sel_view = 0;
+            if (st->m.cur > 0) {
+                memmove(st->m.buf + st->m.cur - 1, st->m.buf + st->m.cur, st->m.len - st->m.cur);
+                st->m.cur--; st->m.len--;
+                st->m.buf[st->m.len] = 0;
+                bmodel_rerun(&st->m);
+            }
+        } else if (c == 16 || c == 14 || c == 2) { /* transport ctrl keys */
+            if (APP->global_key) APP->global_key(st->ui, st, c);
+        } else if (c == 21) { /* ctrl-u */
+            st->m.len = st->m.cur = 0;
+            st->m.buf[0] = 0;
+            bmodel_rerun(&st->m);
+        } else if (c == 23) { /* ctrl-w: delete word */
+            while (st->m.cur > 0 && st->m.buf[st->m.cur - 1] == ' ') { st->m.cur--; st->m.len--; }
+            while (st->m.cur > 0 && st->m.buf[st->m.cur - 1] != ' ') {
+                memmove(st->m.buf + st->m.cur - 1, st->m.buf + st->m.cur, st->m.len - st->m.cur);
+                st->m.cur--; st->m.len--;
+            }
+            st->m.buf[st->m.len] = 0;
+            bmodel_rerun(&st->m);
+        } else if (c == K_LEFT)  { if (st->m.cur > 0) st->m.cur--; }
+        else if (c == K_RIGHT) { if (st->m.cur < st->m.len) st->m.cur++; }
+        else if (c == K_HOME)  { st->m.cur = 0; }
+        else if (c == K_END)   { st->m.cur = st->m.len; }
+        else if (c == K_DEL) {
+            if (st->m.cur < st->m.len) {
+                memmove(st->m.buf + st->m.cur, st->m.buf + st->m.cur + 1,
+                        st->m.len - st->m.cur - 1);
+                st->m.len--;
+                st->m.buf[st->m.len] = 0;
+                bmodel_rerun(&st->m);
+            }
+        } else if (c >= 32 && c < 127 && st->m.len + 1 < sizeof st->m.buf) {
+            st->m.sel_view = 0;
+            memmove(st->m.buf + st->m.cur + 1, st->m.buf + st->m.cur, st->m.len - st->m.cur);
+            st->m.buf[st->m.cur++] = (char)c;
+            st->m.len++;
+            st->m.buf[st->m.len] = 0;
+            bmodel_rerun(&st->m);
+        }
+}
+
+
 void browser_run(const table *tb, void *ui) {
     browser st;
-    memset(&st, 0, sizeof st);
-    st.m.tb = tb;
-    st.ui = ui;
-    vec_init(&st.m.match, sizeof(size_t));
-    vec_init(&st.m.last_good, sizeof(size_t));
-    vec_init(&st.m.sel, sizeof(size_t));
-    vec_init(&st.qview, sizeof(size_t));
-    st.m.parse_ok = 1;
+    browser_init(&st, tb, ui);
 
     /* select() on STDIN_FILENO + buffered getchar() would lose bytes:
      * one read() can pull several keys into the stdio buffer where
      * select can't see them. Unbuffered stdin makes getchar == read(1). */
-    config_load(&st);
     setvbuf(stdin, NULL, _IONBF, 0);
     /* full output buffering: a redraw becomes one write(), so the
      * terminal never renders a half-painted frame */
@@ -844,185 +1050,20 @@ void browser_run(const table *tb, void *ui) {
                 } else continue;
             }
         }
-        st.msg[0] = 0; /* feedback lives for one keystroke */
-        if (getenv("TAGPLAY_DEBUG")) {
-            char m[32];
-            snprintf(m, sizeof m, "key %d", c);
-            dbglog(m);
+
+    /* (dispatch moved into browser_key) */
+        size_t prev = bmodel_shown(&st.m)->len;
+        browser_key(&st, c);
+        switch (st.req) {
+        case BREQ_DETAIL: show_track_detail(&st, st.req_ti); break;
+        case BREQ_ART:    show_art(&st, st.req_ti); break;
+        case BREQ_HELP:   show_help(); break;
+        case BREQ_STATS:  show_stats(&st); break;
+        case BREQ_LS:     list_all(&st); break;
+        case BREQ_QUIT:   quit = 1; break;
+        default: break;
         }
-        size_t prev = (st.m.parse_ok ? st.m.match.len : st.m.last_good.len);
-        const vec *shown = st.m.parse_ok ? &st.m.match : &st.m.last_good;
-        if (c == '\t') { /* Tab: cycle query -> list -> alt view -> query */
-            size_t alen = APP->alt_len ? APP->alt_len(st.ui) : 0;
-            if (st.focus == 0 && shown->len) st.focus = 1;
-            else if ((st.focus == 1 || st.focus == 0) && alen) {
-                st.focus = 2;
-                st.qcur = APP->alt_home ? APP->alt_home(st.ui) : 0;
-            } else st.focus = 0;
-            redraw(&st, prev);
-            continue;
-        }
-        if (st.focus == 2) { /* ---- alt (app) view ---- */
-            int handled = 1;
-            if (APP->alt_key && APP->alt_key(st.ui, &st, c)) {
-                /* app consumed it (transport, reorder, jump, ...) */
-            }
-            else if (c == 'j' || c == K_DOWN) {
-                if (st.qcur + 1 < st.qview.len) st.qcur++;
-            } else if (c == 'k' || c == K_UP) {
-                if (st.qcur > 0) st.qcur--;
-            } else if (c == 'g') st.qcur = 0;
-            else if (c == 'G') st.qcur = st.qview.len ? st.qview.len - 1 : 0;
-            else if (c == K_PGUP || c == K_PGDN) {
-                int rw = term_rows() - 6;
-                if (rw < 1) rw = 1;
-                if (c == K_PGDN) {
-                    st.qcur += (size_t)rw;
-                    if (st.qcur >= st.qview.len)
-                        st.qcur = st.qview.len ? st.qview.len - 1 : 0;
-                } else st.qcur = st.qcur > (size_t)rw
-                               ? st.qcur - (size_t)rw : 0;
-            } else if (c == 't') {
-                if (st.qview.len)
-                    show_track_detail(&st,
-                        *(size_t *)vec_at(&st.qview, st.qcur));
-            } else if (c == 'a') {
-                if (st.qview.len)
-                    show_art(&st, *(size_t *)vec_at(&st.qview, st.qcur));
-            } else if (c == K_ESC) {
-                st.focus = 0;
-            } else if (c == ':') {
-                st.m.len = st.m.cur = 0;
-                st.m.buf[0] = 0;
-                bmodel_rerun(&st.m);
-                st.focus = 0;
-                handled = 0;
-            } else if (c >= 32 && c < 127) {
-                st.focus = 0;         /* typing returns to search */
-                handled = 0;
-            }
-            if (handled) { redraw(&st, prev); continue; }
-        }
-        if (st.focus == 1) { /* ---- list mode ---- */
-            int handled = 1;
-            if (c == 'j' || c == K_DOWN) { if (st.lcur + 1 < shown->len) st.lcur++; }
-            else if (c == 'k' || c == K_UP) { if (st.lcur > 0) st.lcur--; }
-            else if (c == 'g') st.lcur = 0;
-            else if (c == 'G') st.lcur = shown->len ? shown->len - 1 : 0;
-            else if (c == ' ') {
-                if (shown->len) {
-                    bmodel_sel_toggle(&st.m, *(size_t *)vec_at((vec *)shown, st.lcur));
-                    if (st.lcur + 1 < shown->len) st.lcur++; /* advance */
-                }
-            } else if (c == 'a') {
-                for (size_t i = 0; i < shown->len; i++) {
-                    size_t ti = *(size_t *)vec_at((vec *)shown, i);
-                    if (bmodel_sel_find(&st.m, ti) < 0) vec_push(&st.m.sel, &ti);
-                }
-                snprintf(st.msg, sizeof st.msg, "added %zu -> sel:%zu",
-                         shown->len, st.m.sel.len);
-            } else if (c == 't') {
-                if (shown->len)
-                    show_track_detail(&st,
-                        *(size_t *)vec_at((vec *)shown, st.lcur));
-            } else if (c == 'i') {
-                for (size_t i = 0; i < shown->len; i++)
-                    bmodel_sel_toggle(&st.m, *(size_t *)vec_at((vec *)shown, i));
-                snprintf(st.msg, sizeof st.msg, "selection inverted -> sel:%zu",
-                         st.m.sel.len);
-            } else if (c == 'c') {
-                st.m.sel.len = 0;
-                snprintf(st.msg, sizeof st.msg, "selection cleared");
-            } else if (c == K_PGUP || c == K_PGDN) {
-                int rows = term_rows() - 6;
-                if (rows < 1) rows = 1;
-                if (c == K_PGDN) {
-                    st.lcur += (size_t)rows;
-                    if (st.lcur >= shown->len)
-                        st.lcur = shown->len ? shown->len - 1 : 0;
-                } else {
-                    st.lcur = st.lcur > (size_t)rows
-                            ? st.lcur - (size_t)rows : 0;
-                }
-            } else if (c == K_ESC) {
-                st.focus = 0; /* bare Esc back to query */
-            } else if (c == '\r' || c == '\n') {
-                handled = 0;          /* Enter falls through to play */
-            } else if (c == ':') {
-                /* commands from list mode get a fresh line: the query is
-                 * not being edited here, so clearing it is safe */
-                st.m.len = st.m.cur = 0;
-                st.m.buf[0] = 0;
-                bmodel_rerun(&st.m);
-                st.focus = 0;
-                handled = 0;
-            } else if (APP->global_key && APP->global_key(st.ui, &st, c)) {
-                /* app key (volume, mute, transport, ...) */
-            } else if (c >= 32 && c < 127) {
-                st.focus = 0;         /* typing returns to the query */
-                handled = 0;
-            } else handled = 0;
-            if (handled) { redraw(&st, prev); continue; }
-        }
-        if (c == '\r' || c == '\n') {
-            st.m.buf[st.m.len] = 0;
-            if (st.m.buf[0] == ':') {
-                handle_command(&st, st.m.buf + 1, &quit);
-                st.m.len = st.m.cur = 0;
-                st.m.buf[0] = 0;
-                bmodel_rerun(&st.m);
-            } else {
-                /* Enter: play the selection if any, else current results */
-                const vec *q = st.m.sel.len ? &st.m.sel
-                             : (st.m.parse_ok ? &st.m.match : &st.m.last_good);
-                if (q->len && APP->on_enter)
-                    APP->on_enter(st.ui, &st, q, st.m.sel.len > 0);
-                /* the query is kept: Tab returns to the same filtered
-                 * list, marks in context ('':'' still opens a fresh
-                 * command line from list/alt views) */
-            }
-        } else if (c == 127 || c == 8) { /* backspace */
-            st.m.sel_view = 0;
-            if (st.m.cur > 0) {
-                memmove(st.m.buf + st.m.cur - 1, st.m.buf + st.m.cur, st.m.len - st.m.cur);
-                st.m.cur--; st.m.len--;
-                st.m.buf[st.m.len] = 0;
-                bmodel_rerun(&st.m);
-            }
-        } else if (c == 16 || c == 14 || c == 2) { /* transport ctrl keys */
-            if (APP->global_key) APP->global_key(st.ui, &st, c);
-        } else if (c == 21) { /* ctrl-u */
-            st.m.len = st.m.cur = 0;
-            st.m.buf[0] = 0;
-            bmodel_rerun(&st.m);
-        } else if (c == 23) { /* ctrl-w: delete word */
-            while (st.m.cur > 0 && st.m.buf[st.m.cur - 1] == ' ') { st.m.cur--; st.m.len--; }
-            while (st.m.cur > 0 && st.m.buf[st.m.cur - 1] != ' ') {
-                memmove(st.m.buf + st.m.cur - 1, st.m.buf + st.m.cur, st.m.len - st.m.cur);
-                st.m.cur--; st.m.len--;
-            }
-            st.m.buf[st.m.len] = 0;
-            bmodel_rerun(&st.m);
-        } else if (c == K_LEFT)  { if (st.m.cur > 0) st.m.cur--; }
-        else if (c == K_RIGHT) { if (st.m.cur < st.m.len) st.m.cur++; }
-        else if (c == K_HOME)  { st.m.cur = 0; }
-        else if (c == K_END)   { st.m.cur = st.m.len; }
-        else if (c == K_DEL) {
-            if (st.m.cur < st.m.len) {
-                memmove(st.m.buf + st.m.cur, st.m.buf + st.m.cur + 1,
-                        st.m.len - st.m.cur - 1);
-                st.m.len--;
-                st.m.buf[st.m.len] = 0;
-                bmodel_rerun(&st.m);
-            }
-        } else if (c >= 32 && c < 127 && st.m.len + 1 < sizeof st.m.buf) {
-            st.m.sel_view = 0;
-            memmove(st.m.buf + st.m.cur + 1, st.m.buf + st.m.cur, st.m.len - st.m.cur);
-            st.m.buf[st.m.cur++] = (char)c;
-            st.m.len++;
-            st.m.buf[st.m.len] = 0;
-            bmodel_rerun(&st.m);
-        }
+        st.req = BREQ_NONE;
         if (!quit) redraw(&st, prev);
     }
     browser_raw_off();

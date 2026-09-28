@@ -201,16 +201,21 @@ the years; prune with `:radio rm`.
 
 ## tagplay-gui
 
-`make` also builds `tagplay-gui`, the SDL2 face of the same core:
-query bar with the live count, result list with click/ctrl-Space
-selection, queue panel, transport with click-to-seek and a volume
-slider, and a dsp mode button cycling the audiotard chain. Same
-model, same cache, same query language as the terminal -- rendered
-with an embedded public-domain 8x8 bitmap font, no toolkit, no font
-files. `tagplay-gui --selftest DIR` drives the whole event loop
-headless under SDL's dummy driver. This is milestone MG in motion:
-FFT/spectrum and waveform panels, per-effect controls, and the
-emscripten/WASM build follow.
+`make` also builds `tagplay-gui`, the SDL2 face over the very same
+controller the terminal uses: every keystroke is translated to the
+TUI's symbolic codes and fed to the shared `browser_key()`, so the
+query language, Tab between query/list/queue views, Space marks,
+Enter semantics, the queue keys (Space pause, arrows seek, J/K
+reorder, Enter jump), and every `:` command -- `:dsp am 0.7`,
+`:vol 80`, `:radio`, `:group`, playlists -- work identically by
+construction. The mouse is a convenience layer on top: click rows,
+double-click to play, click-to-seek, a volume slider, transport
+buttons. `t`/`a`/`:help` render as overlays with embedded art
+decoded to textures. Radio stations ride along exactly as in the
+TUI. `tagplay-gui --selftest DIR` drives the real event loop
+headless under SDL's dummy driver (15 checks). Milestone MG
+continues: FFT/spectrum and waveform instrument panels, per-effect
+controls, then the emscripten/WASM build.
 
 ## tagview
 
