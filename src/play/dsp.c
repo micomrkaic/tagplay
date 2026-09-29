@@ -96,6 +96,16 @@ struct dsp_chain {
     size_t   rcap, chcap;           /* frames                             */
 };
 
+/* A live MODE change must not stall the stream: the clean history is
+ * mode-independent and the block seam already crossfades, so flipping
+ * modes keeps the pipeline hot and only refreshes the RMS match. The
+ * full reset below is for format changes and track boundaries, where
+ * the history really is invalid. */
+static void mode_flip(dsp_chain *c) {
+    c->gain_set = 0;
+    c->match_gain = HEADROOM;
+}
+
 static void pipeline_reset(dsp_chain *c) {
     c->clen = 0;
     c->cbase = c->in_total = c->emitted = c->t = 0;
@@ -200,7 +210,7 @@ static const double EQ_FREQ[10] = {
 int dsp_set_eq(dsp_chain *c, const double *db, int n) {
     pthread_mutex_lock(&c->mu);
     int eq_fresh = (c->mode != M_EQ);
-    if (eq_fresh) pipeline_reset(c);
+    if (eq_fresh) mode_flip(c);
     c->mode = M_EQ;
     for (int i = 0; i < 10; i++) {
         double g = i < n ? db[i] : 0.0;
@@ -217,7 +227,7 @@ int dsp_set_eq(dsp_chain *c, const double *db, int n) {
 int dsp_set_tone(dsp_chain *c, double bass_db, double treble_db) {
     pthread_mutex_lock(&c->mu);
     int tn_fresh = (c->mode != M_TONE);
-    if (tn_fresh) pipeline_reset(c);
+    if (tn_fresh) mode_flip(c);
     c->mode = M_TONE;
     if (bass_db > 12) bass_db = 12;
     if (bass_db < -12) bass_db = -12;
@@ -244,7 +254,7 @@ int dsp_set_mode(dsp_chain *c, const char *mode, double amount) {
     else return -1;
     pthread_mutex_lock(&c->mu);
     int fresh = (m != c->mode);
-    if (fresh) pipeline_reset(c);
+    if (fresh) mode_flip(c);
     c->mode = m;
     c->amount = amount;
     derive_params(c);

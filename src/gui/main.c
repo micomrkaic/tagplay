@@ -1039,6 +1039,47 @@ static int selftest(gui *g) {
         CHK("F2 hides instruments", g->instr_on == 0);
         push_key(SDLK_F2, 0);
         pump(g);
+        /* live mode switches must not stall the stream: prime a
+         * bare chain with a sine, flip modes mid-stream, and demand
+         * audio in EVERY post-switch block (the old reset emitted
+         * ~0.37 s of silence while re-priming) */
+        {
+            dsp_chain *dc = dsp_create();
+            dsp_on_format(dc, 44100, 2);
+            dsp_set_mode(dc, "tube", 0.3);
+            float blk[1024 * 2];
+            int primed = 0, silent_after = 0;
+            for (int b2 = 0; b2 < 80 && !primed; b2++) {
+                for (int i = 0; i < 1024; i++) {
+                    float s = 0.4f *
+                        (float)sin(2.0 * M_PI * 220.0 *
+                                   (b2 * 1024 + i) / 44100.0);
+                    blk[2 * i] = blk[2 * i + 1] = s;
+                }
+                dsp_process(dc, blk, 1024);
+                double e = 0;
+                for (int i = 0; i < 2048; i++)
+                    e += (double)blk[i] * blk[i];
+                if (e / 2048 > 1e-4) primed = 1;
+            }
+            dsp_set_mode(dc, "vinyl", 0.6);
+            for (int b2 = 0; b2 < 24; b2++) {
+                for (int i = 0; i < 1024; i++) {
+                    float s = 0.4f *
+                        (float)sin(2.0 * M_PI * 220.0 *
+                                   ((80 + b2) * 1024 + i) / 44100.0);
+                    blk[2 * i] = blk[2 * i + 1] = s;
+                }
+                dsp_process(dc, blk, 1024);
+                double e = 0;
+                for (int i = 0; i < 2048; i++)
+                    e += (double)blk[i] * blk[i];
+                if (e / 2048 < 1e-5) silent_after++;
+            }
+            dsp_destroy(dc);
+            CHK("mode switch keeps the stream hot (no dropout)",
+                primed && silent_after == 0);
+        }
         /* granular registry: names round-trip, values clamp, the
          * command language reaches the same knobs */
         {
