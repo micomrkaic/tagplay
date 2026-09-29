@@ -147,22 +147,53 @@ as `Composer — Title (Performer)` in list, queue, and marquee.
 
 ## Commands
 
+Every `:` command works identically in the terminal and in
+tagplay-gui's query bar — they are one code path.
+
+    Search & curation
     :sel                       show only the marked tracks, in playlist
                                order, for editing: Space unmarks, a/i
                                still work, Enter replays; any typing
                                returns to normal search
-    :sort year,album,-track   sort matches; -field descending; :sort clears
+    :sort year,album,-track    sort matches; -field descending; :sort clears
     :group album               group matches under dim headers, sorted by
-                               album then disc/track; any tag key works
-                               (:group composer, :group genre, :group year);
-                               track numbers appear on rows; :group off
-    :cols +year -album         toggle row fields on/off: album year genre
-                               fmt dur track; :cols shows current; :cols
-                               reset restores defaults
-    :save name    :load name    :lists    :clear      m3u playlists
-    :p :n :b :stop :seek 1:23 :vol 80                 transport
-    :dsp tube|tape|vinyl 0.5   :dsp off               audiotard
-    :radio add <url> <name>    :radio rm <name>       stations
+                               album then disc/track; any tag key works;
+                               :group off
+    :cols +year -album         toggle row fields (album year genre fmt dur
+                               track); :cols shows current; :cols reset
+
+    Playlists
+    :save NAME   :load NAME    :lists   :clear      plain .m3u files
+
+    Transport
+    :p :n :b :stop             prev / next / back / stop (queue kept)
+    :seek 1:23                 absolute; arrows seek in the queue view
+    :vol 80  :vol +5  :vol -5  volume, absolute or relative
+
+    Audiotard DSP
+    :dsp tube|tape|vinyl|shellac|am AMOUNT    character modes, amount
+                                              0..1 (0.5 = calibrated)
+    :dsp eq G1..G10            ten ISO octave bands, dB (-18..+18)
+    :dsp bt BASS TREBLE        shelving tone, dB (-12..+12)
+    :dsp off                   bypass
+    :dsp set NAME VALUE        any granular parameter of the current
+                               mode (see :dsp show for names/ranges)
+    :dsp params                one-line parameter dump
+    :dsp meas                  THD %, H2/H3 dB, noise floor dBFS, SNR
+    :dsp show                  full page: every parameter with value,
+                               unit and range, plus the measurements
+
+    Spectrum (terminal)
+    :fft                       toggle the braille spectrum trace under
+                               the status area: clean signal dim, the
+                               processed signal bright — same analyzer
+                               as the GUI
+    :fft ema 0.35              exponential averaging (0 raw .. 1 slow)
+    :fft avgn 16               plain mean over the last N frames (2..64)
+    :fft on | off              explicit
+
+    Radio & misc
+    :radio add URL NAME        :radio rm NAME
     :ls   :stats   :help   :q
 
 ## Audiotard
@@ -177,6 +208,69 @@ the SDL queue. Effect state survives same-format track joins — the tape
 rolls through gapless boundaries. Levels are RMS-matched, so
 `:dsp tape 0.3` vs `:dsp off` compares character, not loudness: the A/B
 is fair by construction.
+
+## The DSP chain, in detail
+
+Everything below is what the code does, not marketing. The chain
+renders in blocks from a clean input history with 512-frame raised-
+cosine crossfades at every block seam, a 16384-frame pre-roll for the
+media effects (their modulators need settling), phase-continuous
+modulation derived from absolute stream time, and one RMS-match gain
+measured against the clean signal at −3 dB headroom (0.708) so every
+mode A/Bs at equal loudness. Corner frequencies are clamped to
+0.45·fs before any filter is designed — a 22.05 kHz stream gets a
+9.9 kHz vinyl lowpass, never a NaN — and the emitted block is scrubbed
+of non-finite samples before it can touch the seam tail, the RMS
+match, or your ears. A mode change keeps the input history hot and
+crossfades old sound into new at the next seam: switching effects is
+a transition, not a dropout.
+
+**tube** — memoryless waveshaping at 8× oversampling (anti-aliased),
+three shapes: `tanh(g·x)/g` (odd harmonics, symmetric), the default
+biased-tanh "tube" (even + odd; `amount` drives g = 2·s with a fixed
+0.2 bias), and a pure-H2 `x + a·x²` shape. Granular: `shape`,
+`drive`, `bias`, `h2a`, `os`.
+
+**vinyl** — pitch wow via variable-rate resampling (8 cents at
+0.55 Hz eccentricity, calibrated), random drift (4 cents, 0.25 Hz
+bandwidth), Poisson crackle (12 impulses/s at −33 dB), filtered
+surface hiss (−63 dB), and the cartridge/cutter band: 16 kHz lowpass,
+25 Hz rumble highpass. `amount` scales modulation depths linearly
+and noise in dB.
+
+**tape** — wow (4 c @ 0.8 Hz) plus flutter (2.5 c @ 9 Hz) plus drift
+(2 c), the head-bump resonance (+3 dB peak at 65 Hz), progressive HF
+loss (0.35 at calibration), hiss at −57 dB, and a 14 kHz lowpass.
+
+**shellac** — a 78 in two eras: acoustic (pre-1925) is horn-cut,
+~250 Hz–6 kHz with a mid horn resonance; electric is ~100 Hz–8 kHz.
+Mono by nature — noise is seeded per-time, not per-channel, so the
+groove hisses identically into both speakers. 12 cents of 1.3 Hz
+eccentricity wow, dense crackle (120/s), abrasive-filler hiss.
+Cranking `amount` past 1.2× calibration drops you into the horn era.
+
+**am** — the full broadcast chain, mono: transmitter compression /
+receiver AGC (attack/release envelope, capped at +12 dB so silence
+never pumps), envelope detection with overmodulation fold above 100 %
+(depth = 0.80 + 0.30·s), the channel + IF band as a 4th-order
+4.5 kHz lowpass with 120 Hz highpass, band-limited atmospheric
+static crashes riding through the same filters, post-detector hiss,
+and slow skywave fading above amount 0.7. A narrower `bw` gives the
+communications-receiver flavor.
+
+**eq** — ten peaking biquads at the ISO octave centers
+31.5 Hz…16 kHz, Q = 1.414, ±18 dB. **tone** — a 120 Hz low shelf and
+an 8 kHz high shelf, Q = 0.7071, ±12 dB. Both bypass the RMS match
+(an EQ you asked for should sound like more bass, not be normalized
+away).
+
+**Measurement** (`:dsp meas`, `:dsp show`, live in the GUI panel):
+a shadow chain configured identically to the live one answers two
+probes — a ~1 kHz sine (integer cycles per window; Hann-windowed
+single-bin DFT at harmonics 2–5 gives THD, H2, H3 immune to the
+media noise) and silence (media noise is additive, so what comes out
+of nothing is the noise floor, reported in dBFS with the SNR of the
+probe over it).
 
 ## Internet radio
 
@@ -202,38 +296,52 @@ the years; prune with `:radio rm`.
 ## tagplay-gui
 
 `make` also builds `tagplay-gui`, the SDL2 face over the very same
-controller the terminal uses: every keystroke is translated to the
+controller the terminal uses. Every keystroke is translated to the
 TUI's symbolic codes and fed to the shared `browser_key()`, so the
 query language, Tab between query/list/queue views, Space marks,
-Enter semantics, the queue keys (Space pause, arrows seek, J/K
-reorder, Enter jump), and every `:` command -- `:dsp am 0.7`,
-`:vol 80`, `:radio`, `:group`, playlists -- work identically by
-construction. The mouse is a convenience layer on top: click rows,
+Enter semantics, the queue keys, and every `:` command work
+identically **by construction** -- there is no second implementation
+to diverge. The mouse is a convenience layer on top: click rows,
 double-click to play, click-to-seek, a volume slider, transport
-buttons. `t`/`a`/`:help` render as overlays with embedded art
-decoded to textures. Radio stations ride along exactly as in the
-TUI. The instrument
-block (F2 toggles) carries the audiotard workbench into the player:
-an audacity-style full-file waveform strip built by a background
-decode pass (click or drag to seek), a live spectrum analyser fed
-by a clean/processed tap around the DSP stage -- the dim trace is
-the source, the bright one is what the chain did to it -- and an
-effects panel whose mode buttons and sliders (amount per character
-mode, ten EQ bands, bass/treble shelves) drive the same dsp_set_*
-API as the `:dsp` commands. audiotard's fft.c is vendored verbatim, and text is
-JetBrains Mono (OFL, ASCII subset embedded) rasterized at runtime
-by the vendored public-domain stb_truetype -- no font files, no
-new link dependencies. The processed
-trace is volume-compensated so the overlay compares character, not
-level; the dB axis auto-ranges to the material with 20 dB
-gridlines; a control lane under the plot picks the display
-averaging -- `ema` with an adjustable weight, or `avgN`, a plain
-mean over the last N frames (2..64); and live parameter tweaks (amount drags, EQ bands)
-update the chain in place without re-measuring the RMS match, so
-turning a knob never clicks.
+buttons. `t` / `a` / `:help` / `:dsp show` render as overlays, with
+embedded art decoded to textures. Radio rides along as in the TUI.
+
+The instrument block (F2 toggles) is the audiotard workbench inside
+the player:
+
+- **Waveform strip** -- the whole file, audacity-style, built by a
+  background decode pass (decoders run many times realtime); played
+  portion accented, click or drag to scrub. Streams get no strip,
+  honestly.
+- **Spectrum analyser** -- fed by a clean/processed tap around the
+  DSP stage: the dim trace is the source, the bright one is what the
+  chain did to it. Volume-compensated so the overlay compares
+  character, not level; log-frequency axis; the dB top auto-ranges
+  to the material with 20 dB gridlines; a control lane under the
+  plot picks `ema` (adjustable weight) or `avgN` (plain mean of the
+  last N frames, 2..64).
+- **Effects panel** -- the eight modes as buttons; per character
+  mode the `amt` macro knob on top and the mode's true parameters
+  beneath, read live from the chain (an amount morph moves every
+  slider; touching one goes manual). Hz parameters get log sliders;
+  `era` and `os` snap to integers. Ten EQ bands and the tone
+  shelves as before. A live `THD / H2 / H3 / noise` readout,
+  recomputed 400 ms after the last tweak. Parameter changes update
+  the chain in place -- state and RMS match preserved -- so turning
+  a knob never clicks, and switching modes crossfades instead of
+  pausing.
+
+Text is JetBrains Mono (OFL, ASCII subset embedded), rasterized at
+runtime by the vendored public-domain stb_truetype; audiotard's
+fft.c is vendored verbatim. No font files, no link dependencies
+beyond the native build's own.
+
 `tagplay-gui --selftest DIR` drives the real event loop headless
-under SDL's dummy driver (21 checks, including an FFT bin-accuracy
-assert and a clean-vs-processed divergence assert under `am`).
+under SDL's dummy driver: query/selection/queue semantics, the
+`:dsp` paths, FFT bin accuracy, clean-vs-processed divergence under
+`am`, no-dropout mode switches, low-rate NaN fences, measurement
+physics, and the granular registry round-trip.
+
 ## tagplay-gui in the browser (WASM)
 
 The same GUI compiles to WebAssembly -- the zero-install demo:

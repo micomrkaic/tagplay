@@ -1095,6 +1095,12 @@ static int selftest(gui *g) {
         }
         {
             push_key(SDLK_u, KMOD_LCTRL);
+            push_text(":fft ema 0.25");
+            push_key(SDLK_RETURN, 0);
+            pump(g);
+            CHK("':fft' routes through the shared path",
+                strstr(g->b.msg, "ema weight 0.25") != NULL);
+            push_key(SDLK_u, KMOD_LCTRL);
             push_text(":dsp vinyl 0.5");
             push_key(SDLK_RETURN, 0);
             push_key(SDLK_u, KMOD_LCTRL);

@@ -27,6 +27,7 @@
 #include "dsp.h"
 #include "tags.h"
 #include "console.h"
+#include "viz.h"
 #include <sys/select.h>
 #include <ctype.h>
 #include <math.h>
@@ -36,17 +37,36 @@
 #include <strings.h>
 #include <unistd.h>
 
+#define FFT_ROWS 8               /* braille rows: 8 cells = 32 dots */
+
 typedef struct {
     player  *pl;
     double   mute_saved;      /* pre-mute gain; 0 = not muted */
     unsigned seen_note_seq;
+    /* the terminal spectrum trace (:fft) */
+    viz      cv;
+    int      fft_on;
+    int      fft_mode;        /* VIZ_EMA / VIZ_BOX */
+    double   fft_ema;         /* slider-equivalent: EMA weight frac */
+    double   fft_n;           /* boxcar length */
+    double   fft_top;         /* auto-ranged axis top, dB */
+    float    tap_c[8192], tap_p[8192];
+    int      tap_rate;
 } console_ui;
 
 static console_ui CTX;
+
+static void ctx_viz_defaults(console_ui *u) {
+    viz_init(&u->cv);
+    u->fft_mode = VIZ_EMA;
+    u->fft_ema = 0.68;
+    u->fft_n = 16;
+}
 #define CUI(b) ((console_ui *)(b)->ui)
 
 void *console_init(player *pl) {
     CTX.pl = pl;
+    ctx_viz_defaults(&CTX);
     return &CTX;
 }
 
@@ -419,12 +439,125 @@ int console_poll_msg(void *ui, char *out, size_t sz) {
 }
 
 int console_status_rows(void *ui) {
+    console_ui *u = ui;
     player_status ps;
-    player_get_status(((console_ui *)ui)->pl, &ps);
-    return ps.playing ? 3 : 0;
+    player_get_status(u->pl, &ps);
+    int r = ps.playing ? 3 : 0;
+    if (u->fft_on && ps.playing) r += FFT_ROWS + 1;   /* + axis line */
+    return r;
+}
+
+/* ---- the terminal spectrum: braille dots, two colors --------------
+ * Each cell is a U+2800 braille glyph: 2 dot-columns x 4 dot-rows,
+ * so FFT_ROWS text rows give 4*FFT_ROWS vertical dots. The clean
+ * trace paints dim (SGR 90), the processed trace bright cyan (96)
+ * and wins shared cells. Same log-frequency axis and auto-ranged
+ * top as the GUI -- it is the same viz_fold_spectrum underneath. */
+static void fft_render(console_ui *u, int cols) {
+    int W = cols - 2;
+    if (W < 16) W = 16;
+    if (W > 300) W = 300;
+    int DW = W * 2, DH = FFT_ROWS * 4;
+    static unsigned char dots[600][FFT_ROWS * 4]; /* 0 none,1 cl,2 pr */
+    memset(dots, 0, sizeof dots);
+
+    int rate = player_viz(u->pl, u->tap_c, u->tap_p, VIZ_FFT);
+    if (rate > 0) {
+        u->tap_rate = rate;
+        double gn = dsp_gain(player_dsp(u->pl));
+        double comp = gn > 1e-4 ? 1.0 / gn : 1.0;
+        double prm = u->fft_mode == VIZ_BOX ? u->fft_n
+                   : (1.0 - 0.95 * u->fft_ema);
+        viz_fold_spectrum(&u->cv, u->tap_c, u->tap_p, VIZ_FFT,
+                          u->fft_mode, prm, comp);
+    }
+    if (!u->cv.sp_primed || u->tap_rate <= 0) {
+        for (int r = 0; r < FFT_ROWS; r++) printf("\x1b[K\r\n");
+        printf("  (fft: play something)\x1b[K\r\n");
+        return;
+    }
+    double f_lo = 30.0, f_hi = u->tap_rate / 2.0;
+    double lr = log(f_hi / f_lo);
+    double mx = -120.0;
+    for (int i = 1; i < VIZ_FFT / 2; i++) {
+        double a = 10.0 * log10(u->cv.sp_clean[i] + 1e-12);
+        double b = 10.0 * log10(u->cv.sp_proc[i] + 1e-12);
+        if (a > mx) mx = a;
+        if (b > mx) mx = b;
+    }
+    double want = mx + 4.0;
+    if (want < -40.0) want = -40.0;
+    if (want > 5.0) want = 5.0;
+    if (u->fft_top == 0.0) u->fft_top = want;
+    u->fft_top += (want > u->fft_top ? 0.5 : 0.05) *
+                  (want - u->fft_top);
+    double top = u->fft_top, span = 70.0;
+
+    for (int pass = 0; pass < 2; pass++) {      /* clean, then proc */
+        const double *sp = pass ? u->cv.sp_proc : u->cv.sp_clean;
+        int last_y = -1, last_x = -1;
+        for (int i = 1; i < VIZ_FFT / 2; i++) {
+            double fq = (double)i * u->tap_rate / VIZ_FFT;
+            if (fq < f_lo) continue;
+            int x = (int)(log(fq / f_lo) / lr * (DW - 1));
+            if (x < 0 || x >= DW) continue;
+            double db = 10.0 * log10(sp[i] + 1e-12);
+            int y = (int)((top - db) / span * (DH - 1));
+            if (y < 0) y = 0;
+            if (y >= DH) y = DH - 1;
+            if (last_x >= 0 && x > last_x) {    /* connect the line */
+                for (int xx = last_x; xx <= x; xx++) {
+                    int yy = last_y + (y - last_y) * (xx - last_x) /
+                             (x - last_x ? x - last_x : 1);
+                    dots[xx][yy] = pass ? 2 : 1;
+                }
+            } else dots[x][y] = pass ? 2 : 1;
+            last_x = x;
+            last_y = y;
+        }
+    }
+
+    /* braille bit layout: dots 1..8 -> bits 0,1,2,6 (left col top..
+     * bottom) and 3,4,5,7 (right col) */
+    static const int LBIT[4] = { 0, 1, 2, 6 };
+    static const int RBIT[4] = { 3, 4, 5, 7 };
+    for (int row = 0; row < FFT_ROWS; row++) {
+        int cur_col = 0;
+        for (int cx = 0; cx < W; cx++) {
+            unsigned bits = 0;
+            int color = 0;
+            for (int dy = 0; dy < 4; dy++) {
+                int y = row * 4 + dy;
+                unsigned char l = dots[cx * 2][y];
+                unsigned char r = dots[cx * 2 + 1][y];
+                if (l) { bits |= 1u << LBIT[dy]; if (l > color) color = l; }
+                if (r) { bits |= 1u << RBIT[dy]; if (r > color) color = r; }
+            }
+            int wantc = bits ? (color == 2 ? 96 : 90) : 0;
+            if (wantc != cur_col) {
+                printf(wantc ? "\x1b[%dm" : "\x1b[0m", wantc);
+                cur_col = wantc;
+            }
+            unsigned cp = 0x2800 + bits;
+            printf("%c%c%c", 0xE0 | (cp >> 12),
+                   0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+        }
+        if (cur_col) printf("\x1b[0m");
+        printf("\x1b[K\r\n");
+    }
+    printf("\x1b[2m  %+.0f..%+.0fdB  30Hz..%dkHz  %s%s\x1b[0m\x1b[K\r\n",
+           top, top - span, (int)(f_hi / 1000.0),
+           u->fft_mode == VIZ_BOX ? "avgN " : "ema ",
+           "");
 }
 
 void console_status(void *ui, struct browser *b, int cols) {
+    {
+        console_ui *uf = ui;
+        player_status psf;
+        player_get_status(uf->pl, &psf);
+        if (uf->fft_on && psf.playing) fft_render(uf, cols);
+    }
     (void)ui;
     player_status ps;
     player_get_status(CUI(b)->pl, &ps);
@@ -622,6 +755,39 @@ int console_command(void *ui, struct browser *b, const char *cmd) {
         snprintf(b->msg, sizeof b->msg,
                  "usage: :radio add <url> <name> | :radio rm <name>  "
                  "(find them: format=radio)");
+        return 1;
+    }
+    if (!strncmp(cmd, "fft", 3)) {
+        char a1[16];
+        double v;
+        if (sscanf(cmd + 3, "%15s %lf", a1, &v) == 2) {
+            if (!strcmp(a1, "ema")) {
+                if (v < 0) v = 0;
+                if (v > 1) v = 1;
+                u->fft_ema = v;
+                u->fft_mode = VIZ_EMA;
+                u->fft_on = 1;
+                snprintf(b->msg, sizeof b->msg,
+                         "fft: ema weight %.2f", v);
+                return 1;
+            }
+            if (!strcmp(a1, "avgn") || !strcmp(a1, "avgN")) {
+                if (v < 2) v = 2;
+                if (v > VIZ_RING) v = VIZ_RING;
+                u->fft_n = v;
+                u->fft_mode = VIZ_BOX;
+                u->fft_on = 1;
+                snprintf(b->msg, sizeof b->msg,
+                         "fft: mean of last %d frames", (int)v);
+                return 1;
+            }
+        } else if (sscanf(cmd + 3, "%15s", a1) == 1) {
+            if (!strcmp(a1, "on"))  { u->fft_on = 1; return 1; }
+            if (!strcmp(a1, "off")) { u->fft_on = 0; return 1; }
+        }
+        u->fft_on = !u->fft_on;
+        snprintf(b->msg, sizeof b->msg, "fft %s",
+                 u->fft_on ? "on" : "off");
         return 1;
     }
     if (!strncmp(cmd, "dsp", 3)) {

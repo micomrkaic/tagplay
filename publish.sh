@@ -20,7 +20,17 @@
 # The remote is set ONCE, on first run, to the HTTPS URL. An existing
 # origin (whatever its URL) is left strictly alone.
 set -e
-cd "$(dirname "$0")"
+
+# The tarball form REPLACES this very script on disk mid-run; run from
+# a private copy so the shell never reads a half-new file. The copy
+# must remember where the repo is -- its own dirname is /tmp.
+if [ -z "$TAGPLAY_PUBLISH_DIR" ]; then
+    TAGPLAY_PUBLISH_DIR="$(cd "$(dirname "$0")" && pwd)"
+    export TAGPLAY_PUBLISH_DIR
+    cp "$0" "/tmp/tagplay_publish_$$.sh"
+    exec sh "/tmp/tagplay_publish_$$.sh" "$@"
+fi
+cd "$TAGPLAY_PUBLISH_DIR"
 
 MSG=update
 case "$1" in
@@ -35,6 +45,21 @@ case "$1" in
     fi
     echo "publish.sh: unpacking $TARBALL"
     tar xzf "$TARBALL" --strip-components=1
+    # a tarball cannot delete files; a DELETIONS manifest can.
+    if [ -f DELETIONS ]; then
+        while IFS= read -r path; do
+            case "$path" in
+            ""|\#*) continue ;;
+            /*|*..*) echo "publish.sh: refusing DELETIONS path: $path"
+                     exit 1 ;;
+            esac
+            if [ -e "$path" ]; then
+                echo "publish.sh: deleting (per manifest): $path"
+                rm -f "$path"
+            fi
+        done < DELETIONS
+        rm -f DELETIONS      # the manifest itself is never committed
+    fi
     if [ -d .git ] && git diff --quiet && \
        [ -z "$(git status --porcelain)" ]; then
         echo "publish.sh: tarball introduces no changes (already published?)"
