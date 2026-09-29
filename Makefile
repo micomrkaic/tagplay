@@ -52,3 +52,31 @@ install: tagplay
 	install -m 755 tagplay $(HOME)/.local/bin/
 
 .PHONY: clean install
+
+# ---- the browser build (MG-d) --------------------------------------
+# Needs emscripten (apt install emscripten) and the wasm deps:
+#   ./tools/build_wasm_deps.sh
+# Then:  make wasm  ->  web/tagplay.html (+ .js, .wasm, .worker.js)
+# Serve with COOP/COEP headers:  python3 tools/serve_wasm.py
+WASM_SRC := $(filter-out src/play/main.c src/play/radio.c, \
+              $(wildcard src/core/*.c) $(wildcard src/play/*.c)) \
+            $(wildcard src/gui/*.c)
+# Debian's emscripten freezes its system cache; give the build its own
+# writable one (ports land there on first use).
+# our private EM_CONFIG exists only when the deps script decided the
+# frozen Debian emscripten needs it; an emsdk install runs bare
+EMENV := $(if $(wildcard third_party/wasm/emconfig),EM_CONFIG=$(PWD)/third_party/wasm/emconfig,)
+
+wasm:
+	$(EMENV) emcc -std=gnu17 -O2 -Isrc/core -Isrc/play -Isrc/gui \
+	  -Ithird_party/wasm/include -D_GNU_SOURCE \
+	  -pthread -sUSE_SDL=2 \
+	  $(WASM_SRC) \
+	  -Lthird_party/wasm/lib -lFLAC -lpcre2-8 \
+	  -sUSE_PTHREADS=1 -sPTHREAD_POOL_SIZE=8 \
+	  -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=134217728 \
+	  -sMAXIMUM_MEMORY=1073741824 \
+	  -sEXPORTED_RUNTIME_METHODS=ccall,FS \
+	  -o web/tagplay.js
+
+.PHONY: wasm

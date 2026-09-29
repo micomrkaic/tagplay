@@ -6,6 +6,14 @@ testlib/
 phototest/
 *.tar.gz
 .publish_build.log
+web/tagplay.js
+web/tagplay.wasm
+web/tagplay.worker.js
+third_party/wasm/src/
+third_party/wasm/lib/
+third_party/wasm/include/
+third_party/wasm/emcache/
+third_party/wasm/emconfig
 # never publish credentials, whatever they were named
 refurbkey*
 id_rsa* id_ecdsa* id_ed25519*

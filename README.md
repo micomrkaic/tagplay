@@ -234,7 +234,25 @@ turning a knob never clicks.
 `tagplay-gui --selftest DIR` drives the real event loop headless
 under SDL's dummy driver (21 checks, including an FFT bin-accuracy
 assert and a clean-vs-processed divergence assert under `am`).
-Next: the emscripten/WASM build.
+## tagplay-gui in the browser (WASM)
+
+The same GUI compiles to WebAssembly -- the zero-install demo:
+
+    sudo apt install emscripten     # Ubuntu 24
+    ./tools/build_wasm_deps.sh      # pcre2 + libFLAC to wasm, once
+    make wasm                       # -> web/tagplay.{html,js,wasm}
+    python3 tools/serve_wasm.py     # COOP/COEP headers, then
+                                    # http://localhost:8000/tagplay.html
+
+Drop FLAC/MP3/WAV files anywhere on the page; they land in an
+in-memory filesystem and the library rescans. The query language,
+Tab views, `:` commands, instrument panel, granular DSP bench and
+measurements are the identical code. Radio stays native-only (no
+libcurl in the browser, and stations rarely send CORS headers).
+Threads need SharedArrayBuffer, hence the COOP/COEP headers; for
+itch.io-style hosting, zip the four files in `web/` with
+`tagplay.html` renamed `index.html` and enable the site's
+SharedArrayBuffer option.
 
 ## tagview
 

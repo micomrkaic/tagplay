@@ -1,0 +1,71 @@
+<!doctype html>
+<!-- This file is part of tagplay.  GPL-3.0-or-later; see COPYING. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tagplay</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101014;
+               color: #dcdcd6; font: 14px monospace; }
+  #wrap { display: flex; flex-direction: column; height: 100%; }
+  #bar { padding: 6px 10px; background: #1a1a22; color: #8a8a86; }
+  #bar b { color: #78beff; }
+  canvas { display: block; flex: 1; width: 100%; height: 100%;
+           outline: none; }
+  #drop { position: fixed; inset: 0; display: none;
+          background: rgba(20,20,28,.85); color: #ffc850;
+          font-size: 22px; align-items: center;
+          justify-content: center; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar"><b>tagplay</b> &mdash; drop audio files (flac, mp3,
+    wav) anywhere on this page; the query bar, Tab views and
+    <code>:</code> commands work exactly as in the terminal.
+    Radio needs the native build.</div>
+  <canvas id="canvas" tabindex="-1"
+          oncontextmenu="event.preventDefault()"></canvas>
+</div>
+<div id="drop">drop to add to the library</div>
+<script>
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    onRuntimeInitialized: function () {
+      try { FS.mkdir('/music'); } catch (e) {}
+    }
+  };
+  (function () {
+    var overlay = document.getElementById('drop');
+    var depth = 0;
+    window.addEventListener('dragenter', function (e) {
+      e.preventDefault(); depth++;
+      overlay.style.display = 'flex';
+    });
+    window.addEventListener('dragleave', function (e) {
+      e.preventDefault();
+      if (--depth <= 0) { depth = 0; overlay.style.display = 'none'; }
+    });
+    window.addEventListener('dragover', function (e) {
+      e.preventDefault();
+    });
+    window.addEventListener('drop', function (e) {
+      e.preventDefault(); depth = 0;
+      overlay.style.display = 'none';
+      var files = e.dataTransfer.files;
+      if (!files || !files.length) return;
+      var pending = files.length;
+      Array.prototype.forEach.call(files, function (f) {
+        f.arrayBuffer().then(function (buf) {
+          try {
+            FS.writeFile('/music/' + f.name, new Uint8Array(buf));
+          } catch (err) { console.error(err); }
+          if (--pending === 0) Module._web_rescan();
+        });
+      });
+    });
+  })();
+</script>
+<script async src="tagplay.js"></script>
+</body>
+</html>

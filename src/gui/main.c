@@ -30,6 +30,9 @@
  * --selftest drives the real loop headless under SDL's dummy driver. */
 
 #include <SDL.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1262,6 +1265,41 @@ static int selftest(gui *g) {
     return fails;
 }
 
+#ifdef __EMSCRIPTEN__
+/* ---- the browser face plumbing ----------------------------------
+ * The page's drop handler writes files into MEMFS under /music and
+ * calls web_rescan(); the main loop is a browser callback. */
+static gui *WG;
+static table *WTB;
+
+static void em_frame(void) {
+    gui *g = WG;
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) handle(g, &e);
+    static Uint32 last_tick;
+    Uint32 now = SDL_GetTicks();
+    if (now - last_tick > 200) {
+        tick(g);
+        last_tick = now;
+    }
+    frame(g);
+    if (g->quit) emscripten_cancel_main_loop();
+}
+
+EMSCRIPTEN_KEEPALIVE
+void web_rescan(void) {
+    if (!WG || !WTB) return;
+    table none;
+    table_init(&none);
+    size_t added = scan_dir("/music", WTB, &none);
+    table_free(&none);
+    bmodel_rerun(&WG->b.m);
+    snprintf(WG->b.msg, sizeof WG->b.msg,
+             "%zu file%s added -- %zu total", added,
+             added == 1 ? "" : "s", table_len(WTB));
+}
+#endif
+
 /* ---- main ---- */
 
 int main(int argc, char **argv) {
@@ -1289,11 +1327,17 @@ int main(int argc, char **argv) {
         parsed += scan_dir(argv[i], &tb, &cached);
     table_free(&cached);
     if (!table_len(&tb)) {
+#ifdef __EMSCRIPTEN__
+        /* the browser starts empty: files arrive by drop */
+#else
         fprintf(stderr, "tagplay-gui: nothing found\n");
         return 1;
+#endif
     }
     if (parsed) cache_save(cp, &tb);
+#ifndef __EMSCRIPTEN__
     stations_load(&tb);      /* the dial rides along, as in the TUI */
+#endif
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
         fprintf(stderr, "SDL: %s\n", SDL_GetError());
@@ -1324,6 +1368,11 @@ int main(int argc, char **argv) {
     int rc = 0;
     if (st) rc = selftest(&g);
     else {
+#ifdef __EMSCRIPTEN__
+        WG = &g;
+        WTB = &tb;
+        emscripten_set_main_loop(em_frame, 0, 1);
+#else
         Uint32 last_tick = 0;
         while (!g.quit) {
             SDL_Event e;
@@ -1336,6 +1385,7 @@ int main(int argc, char **argv) {
             frame(&g);
             SDL_Delay(33);
         }
+#endif
     }
     viz_shutdown(&g.v);
     if (g.overlay_art) SDL_DestroyTexture(g.overlay_art);
