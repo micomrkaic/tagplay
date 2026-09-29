@@ -329,6 +329,20 @@ static void outq_push(dsp_chain *c, const double *frames_in, size_t nframes) {
 static int render_block(dsp_chain *c) {
     int ch = c->channels;
     double fs = (double)c->rate;
+    /* corner frequencies must stay below Nyquist: filters designed
+     * at or above fs/2 go non-finite (silent NaN at low stream
+     * rates -- 22.05/24 kHz news radio). Clamp at the vendor
+     * boundary; audiotard gets the same guard upstream. */
+    double nyq = 0.45 * fs;
+    tape_params  tp_s = c->tp;
+    vinyl_params vp_s = c->vp;
+    am_params    ap_s = c->ap;
+    if (tp_s.lp_hz  > nyq) tp_s.lp_hz  = nyq;
+    if (tp_s.bump_hz > nyq) tp_s.bump_hz = nyq;
+    if (vp_s.lp_hz  > nyq) vp_s.lp_hz  = nyq;
+    if (vp_s.hp_hz  > nyq) vp_s.hp_hz  = nyq;
+    if (ap_s.bw_hz  > nyq) ap_s.bw_hz  = nyq;
+    if (ap_s.hp_hz  > nyq) ap_s.hp_hz  = nyq;
     uint64_t pr = (c->use_tape || c->use_vinyl ||
                    c->use_shellac || c->use_am) ? PR_MEDIA : PR_SHAPE;
     uint64_t pre  = c->t > pr ? c->t - pr : 0;
@@ -359,17 +373,17 @@ static int render_block(dsp_chain *c) {
             memcpy(c->chan, c->chan2, span * sizeof(double));
         }
         if (c->use_tape &&
-            tape_process(c->chan, span, fs, &c->tp, (unsigned)cc, t0))
+            tape_process(c->chan, span, fs, &tp_s, (unsigned)cc, t0))
             return -1;
         if (c->use_vinyl &&
-            vinyl_process(c->chan, span, fs, &c->vp, (unsigned)cc, t0))
+            vinyl_process(c->chan, span, fs, &vp_s, (unsigned)cc, t0))
             return -1;
         if (c->use_shellac &&
             shellac_process(c->chan, span, fs, &c->shp, t0))
             return -1;   /* noise is time-seeded: both channels hiss
                           * identically, as one mono groove should */
         if (c->use_am &&
-            am_process(c->chan, span, fs, &c->ap, t0))
+            am_process(c->chan, span, fs, &ap_s, t0))
             return -1;
         if (c->use_tone) {   /* audiotard's tone dials, verbatim spec */
             biquad q;
@@ -399,6 +413,17 @@ static int render_block(dsp_chain *c) {
 
     size_t off = (size_t)(c->t - pre) * (size_t)ch;   /* emit offset */
     size_t nem = B_FRAMES * (size_t)ch;
+
+    /* non-finite scrub over the emission span: a bad filter design
+
+     * or overflow must never poison the stream, the seam tail, or
+
+     * the RMS match below */
+
+    for (size_t i = 0; i < nem; i++)
+
+        if (!isfinite(c->rbuf[off + i])) c->rbuf[off + i] = 0.0;
+
 
     if (!c->gain_set && (c->use_eq || c->use_tone)) {
         /* an equalizer's level change IS its function: RMS-matching a
