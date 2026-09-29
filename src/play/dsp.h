@@ -62,6 +62,21 @@ int  dsp_param_set(dsp_chain *c, const char *mode, int i, double v);
 int  dsp_param_set_name(dsp_chain *c, const char *name, double v);
 double dsp_amount(const dsp_chain *c);
 
+/* ---- effect measurements ------------------------------------------
+ * What is this chain actually DOING? Probes through a shadow chain
+ * configured identically to the live one (mode, amount, every manual
+ * parameter tweak): a ~1 kHz sine for distortion -- THD from
+ * harmonics 2..5, so media noise cannot pollute it -- and silence
+ * for the additive noise floor. Blocking (tens of ms); call from a
+ * UI thread, never the audio thread. Returns 0 on success. */
+typedef struct {
+    double thd_pct;      /* total harmonic distortion, percent      */
+    double h2_db, h3_db; /* 2nd/3rd harmonic re fundamental, dB     */
+    double noise_dbfs;   /* additive floor, dB re full scale        */
+    double snr_db;       /* probe fundamental over that floor       */
+} dsp_meas;
+int dsp_measure(dsp_chain *c, dsp_meas *m);
+
 /* in-place on interleaved float32 */
 void dsp_process(dsp_chain *c, float *buf, long frames);
 

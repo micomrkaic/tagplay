@@ -623,3 +623,126 @@ int dsp_param_set_name(dsp_chain *c, const char *name, double v) {
 }
 
 double dsp_amount(const dsp_chain *c) { return c->amount; }
+
+/* ---- effect measurements ------------------------------------------ */
+
+/* Hann-windowed single-bin power at frequency f over x[0..n) */
+static double bin_power(const float *x, int n, double f, double fs) {
+    double cr = 0, ci = 0;
+    for (int i = 0; i < n; i++) {
+        double w = 0.5 - 0.5 * cos(2.0 * M_PI * i / (n - 1));
+        double ph = 2.0 * M_PI * f * i / fs;
+        cr += w * x[i] * cos(ph);
+        ci += w * x[i] * sin(ph);
+    }
+    return cr * cr + ci * ci;
+}
+
+/* run frames of a mono-duplicated stereo source through ch, return the
+ * last keep samples (left channel) in out[] */
+static void probe_run(dsp_chain *ch, int sine, double f0, double fs,
+                      float *out, int keep) {
+    enum { BLK = 1024 };
+    float blk[BLK * 2];
+    int total = 70;              /* > pre-roll + settle */
+    int have = 0;
+    long pos = 0;
+    for (int b = 0; b < total; b++) {
+        for (int i = 0; i < BLK; i++) {
+            float s = sine
+                ? 0.5f * (float)sin(2.0 * M_PI * f0 * (pos + i) / fs)
+                : 0.0f;
+            blk[2 * i] = blk[2 * i + 1] = s;
+        }
+        pos += BLK;
+        dsp_process(ch, blk, BLK);
+        for (int i = 0; i < BLK; i++) {
+            if (have < keep) out[have++] = blk[2 * i];
+            else {
+                memmove(out, out + 1, (size_t)(keep - 1) *
+                        sizeof *out);
+                out[keep - 1] = blk[2 * i];
+            }
+        }
+    }
+}
+
+int dsp_measure(dsp_chain *c, dsp_meas *m) {
+    if (!m) return -1;
+    memset(m, 0, sizeof *m);
+    pthread_mutex_lock(&c->mu);
+    dsp_mode mode = c->mode;
+    double amount = c->amount;
+    int rate = c->rate > 0 ? c->rate : 44100;
+    ws_params      wsp = c->wsp;
+    tape_params    tp  = c->tp;
+    vinyl_params   vp  = c->vp;
+    shellac_params shp = c->shp;
+    am_params      ap  = c->ap;
+    double eq[10];
+    memcpy(eq, c->eq_db, sizeof eq);
+    double bass = c->bass_db, treb = c->treble_db;
+    int os = c->os;
+    pthread_mutex_unlock(&c->mu);
+
+    m->noise_dbfs = -120.0;
+    m->snr_db = 120.0;
+    if (mode == M_OFF) return 0;
+
+    dsp_chain *s = dsp_create();
+    if (!s) return -1;
+    dsp_on_format(s, rate, 2);
+    switch (mode) {
+    case M_EQ:   dsp_set_eq(s, eq, 10); break;
+    case M_TONE: dsp_set_tone(s, bass, treb); break;
+    default: {
+        const char *nm = mode == M_TUBE ? "tube"
+                       : mode == M_TAPE ? "tape"
+                       : mode == M_VINYL ? "vinyl"
+                       : mode == M_SHELLAC ? "shellac" : "am";
+        dsp_set_mode(s, nm, amount);
+        pthread_mutex_lock(&s->mu);
+        s->wsp = wsp; s->tp = tp; s->vp = vp;
+        s->shp = shp; s->ap = ap; s->os = os;
+        pthread_mutex_unlock(&s->mu);
+        break;
+    }
+    }
+
+    enum { KEEP = 4096 };
+    static float cap[KEEP];       /* UI-thread only, per contract */
+    /* an f0 near 1 kHz with an integer number of cycles in KEEP */
+    double f0 = floor(1000.0 * KEEP / rate) * (double)rate / KEEP;
+
+    probe_run(s, 1, f0, rate, cap, KEEP);
+    double p1 = bin_power(cap, KEEP, f0, rate);
+    double ph[5] = { 0 };
+    double psum = 0;
+    for (int h = 2; h <= 5; h++) {
+        if (h * f0 < 0.48 * rate) {
+            ph[h - 1] = bin_power(cap, KEEP, h * f0, rate);
+            psum += ph[h - 1];
+        }
+    }
+    if (p1 > 1e-20) {
+        m->thd_pct = 100.0 * sqrt(psum / p1);
+        m->h2_db = ph[1] > 1e-20 ? 10.0 * log10(ph[1] / p1) : -120.0;
+        m->h3_db = ph[2] > 1e-20 ? 10.0 * log10(ph[2] / p1) : -120.0;
+    }
+    double sine_rms = 0;
+    for (int i = 0; i < KEEP; i++)
+        sine_rms += (double)cap[i] * cap[i];
+    sine_rms = sqrt(sine_rms / KEEP);
+
+    probe_run(s, 0, f0, rate, cap, KEEP);
+    double nr = 0;
+    for (int i = 0; i < KEEP; i++)
+        nr += (double)cap[i] * cap[i];
+    nr = sqrt(nr / KEEP);
+    m->noise_dbfs = nr > 1e-6 ? 20.0 * log10(nr) : -120.0;
+    m->snr_db = (nr > 1e-6 && sine_rms > 1e-6)
+              ? 20.0 * log10(sine_rms / nr) : 120.0;
+
+    dsp_destroy(s);
+    return 0;
+}

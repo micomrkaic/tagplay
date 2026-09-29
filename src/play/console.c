@@ -651,6 +651,51 @@ int console_command(void *ui, struct browser *b, const char *cmd) {
                          dsp_mode_name(player_dsp(u->pl)));
             return 1;
         }
+        if (!strcmp(name, "meas")) {
+            dsp_meas mm;
+            if (dsp_measure(player_dsp(u->pl), &mm) == 0)
+                snprintf(b->msg, sizeof b->msg,
+                         "%s: THD %.2f%%  H2 %.1fdB  H3 %.1fdB  "
+                         "noise %.1fdBFS  SNR %.1fdB",
+                         dsp_mode_name(player_dsp(u->pl)),
+                         mm.thd_pct, mm.h2_db, mm.h3_db,
+                         mm.noise_dbfs, mm.snr_db);
+            return 1;
+        }
+        if (!strcmp(name, "show")) {
+            static char page[4096];
+            const char *md = dsp_mode_name(player_dsp(u->pl));
+            dsp_meas mm;
+            int have_m = dsp_measure(player_dsp(u->pl), &mm) == 0;
+            size_t off = (size_t)snprintf(page, sizeof page,
+                "dsp: %s   amount %.2f   volume %d%%\n\n",
+                md, dsp_amount(player_dsp(u->pl)),
+                (int)(dsp_gain(player_dsp(u->pl)) * 100 + 0.5));
+            int n = dsp_param_count(md);
+            for (int i = 0; i < n && off < sizeof page - 80; i++) {
+                const char *nm, *un;
+                double lo, hi, cur = 0;
+                int ii, il;
+                dsp_param_info(md, i, &nm, &un, &lo, &hi, &ii, &il);
+                dsp_param_get(player_dsp(u->pl), md, i, &cur);
+                off += (size_t)snprintf(page + off, sizeof page - off,
+                    "  %-9s %10.3g %-3s   [%g .. %g]%s\n",
+                    nm, cur, un, lo, hi, ii ? "  (integer)" : "");
+            }
+            if (!n)
+                off += (size_t)snprintf(page + off, sizeof page - off,
+                    "  (no parameters in this mode)\n");
+            if (have_m)
+                snprintf(page + off, sizeof page - off,
+                    "\n  THD %.2f%%   H2 %.1f dB   H3 %.1f dB\n"
+                    "  noise %.1f dBFS   SNR %.1f dB\n"
+                    "\n  :dsp set NAME VALUE changes any of these.\n",
+                    mm.thd_pct, mm.h2_db, mm.h3_db, mm.noise_dbfs,
+                    mm.snr_db);
+            b->req = BREQ_PAGE;
+            b->req_text = page;
+            return 1;
+        }
         if (!strcmp(name, "params")) {
             const char *md = dsp_mode_name(player_dsp(u->pl));
             int n = dsp_param_count(md);

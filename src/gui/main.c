@@ -64,6 +64,7 @@ typedef struct {
     const table *tb;
     int      w, h, quit;
     int      overlay;        /* BREQ_* rendered until any key, or 0 */
+    const char *overlay_text;
     size_t   overlay_ti;
     SDL_Texture *overlay_art;
     int      art_w, art_h;
@@ -71,6 +72,9 @@ typedef struct {
     int      list_top, row_h;
     /* ---- instrument panel (MG-c) ---- */
     viz      v;
+    dsp_meas meas;
+    int      meas_ok;
+    Uint32   meas_dirty_at;  /* 0 = clean */
     int      instr_on;       /* F2 */
     float    tap_c[8192], tap_p[8192];
     int      tap_rate;
@@ -144,7 +148,10 @@ static void overlay_load_art(gui *g, size_t ti) {
 
 /* ---- effects panel plumbing ---- */
 
+static void meas_mark(gui *g) { g->meas_dirty_at = SDL_GetTicks(); }
+
 static void fx_apply(gui *g) {
+    meas_mark(g);
     dsp_chain *c = player_dsp(g->pl);
     const char *m = fx_names[g->fx_mode];
     if (g->fx_mode == 6)      dsp_set_eq(c, g->eq_db, 10);
@@ -159,8 +166,10 @@ static void fx_slide(gui *g, int i, double f) {
             g->fx_amt[g->fx_mode] = (float)f;
             dsp_set_mode(player_dsp(g->pl), md,
                          g->fx_amt[g->fx_mode]);
+            meas_mark(g);
             return;
         }
+        meas_mark(g);
         int pi = i - 1;
         const char *nm; const char *un;
         double lo, hi;
@@ -338,6 +347,16 @@ static void draw_instruments(gui *g, const player_status *ps) {
                   fx_names[i], active ? HL : FG);
     }
     int sy = g->fx_r.y + 2 * (CH + 12) + 10;
+    if (g->meas_ok && strcmp(live, "off")) {
+        char ms[128];
+        snprintf(ms, sizeof ms,
+                 "THD %.2f%%  H2 %.0fdB  H3 %.0fdB  N %.0fdBFS",
+                 g->meas.thd_pct, g->meas.h2_db, g->meas.h3_db,
+                 g->meas.noise_dbfs);
+        draw_textn(g->r, g->fx_r.x + 6,
+                   g->fx_r.y + g->fx_r.h - CH - 4, ms,
+                   (g->fx_r.w - 12) / CW, HL);
+    }
     g->fx_sl_n = 0;
     char vt[24];
     if (g->fx_mode >= 1 && g->fx_mode <= 5) {
@@ -400,10 +419,12 @@ static void frame(gui *g) {
     player_get_status(g->pl, &ps);
     const vec *shown = bmodel_shown(&g->b.m);
 
-    if (g->overlay == BREQ_HELP || g->overlay == BREQ_DETAIL) {
+    if (g->overlay == BREQ_HELP || g->overlay == BREQ_PAGE ||
+        g->overlay == BREQ_DETAIL) {
         int y = pad;
-        if (g->overlay == BREQ_HELP) {
-            const char *p = BROWSER_HELP;
+        if (g->overlay == BREQ_HELP || g->overlay == BREQ_PAGE) {
+            const char *p = g->overlay == BREQ_HELP ? BROWSER_HELP
+                          : (g->overlay_text ? g->overlay_text : "");
             char line[256];
             while (*p && y < g->h - CH) {
                 size_t n = strcspn(p, "\n");
@@ -629,6 +650,10 @@ static void service(gui *g) {
         overlay_load_art(g, g->b.req_ti);
         break;
     case BREQ_HELP:  g->overlay = BREQ_HELP; break;
+    case BREQ_PAGE:
+        g->overlay = BREQ_PAGE;
+        g->overlay_text = g->b.req_text;
+        break;
     case BREQ_STATS:
         snprintf(g->b.msg, sizeof g->b.msg, ":stats is terminal-only");
         break;
@@ -839,6 +864,11 @@ static void tick(gui *g) {
             g->v.pk_track = (long)ps.track_index;
         }
     }
+    if (g->meas_dirty_at &&
+        SDL_GetTicks() - g->meas_dirty_at > 400) {
+        g->meas_ok = dsp_measure(player_dsp(g->pl), &g->meas) == 0;
+        g->meas_dirty_at = 0;
+    }
     int rate = player_viz(g->pl, g->tap_c, g->tap_p, VIZ_FFT);
     if (rate > 0) {
         g->tap_rate = rate;
@@ -1039,6 +1069,42 @@ static int selftest(gui *g) {
         CHK("F2 hides instruments", g->instr_on == 0);
         push_key(SDLK_F2, 0);
         pump(g);
+        /* measurements: tube must distort with even harmonics, off
+         * must be clean, vinyl must hiss; ':dsp show' pages in both
+         * faces */
+        {
+            dsp_chain *dc = dsp_create();
+            dsp_on_format(dc, 44100, 2);
+            dsp_meas mm;
+            dsp_set_mode(dc, "tube", 0.8);
+            dsp_measure(dc, &mm);
+            CHK("meas: tube distorts, H2 present",
+                mm.thd_pct > 0.5 && mm.h2_db > -60.0);
+            dsp_set_mode(dc, "off", 0.0);
+            dsp_measure(dc, &mm);
+            CHK("meas: off is clean",
+                mm.thd_pct < 0.05 && mm.noise_dbfs <= -110.0);
+            dsp_set_mode(dc, "vinyl", 0.7);
+            dsp_measure(dc, &mm);
+            CHK("meas: vinyl has a noise floor",
+                mm.noise_dbfs > -100.0 && mm.noise_dbfs < -10.0);
+            dsp_destroy(dc);
+        }
+        {
+            push_key(SDLK_u, KMOD_LCTRL);
+            push_text(":dsp vinyl 0.5");
+            push_key(SDLK_RETURN, 0);
+            push_key(SDLK_u, KMOD_LCTRL);
+            push_text(":dsp show");
+            push_key(SDLK_RETURN, 0);
+            pump(g);
+            CHK("':dsp show' pages in the GUI",
+                g->overlay == BREQ_PAGE && g->overlay_text &&
+                strstr(g->overlay_text, "wow") &&
+                strstr(g->overlay_text, "THD"));
+            push_key(SDLK_ESCAPE, 0);
+            pump(g);
+        }
         /* low-rate streams: vinyl/tape corners above Nyquist used to
          * design NaN filters -- finite, audible output at 22.05 kHz
          * is the regression fence */

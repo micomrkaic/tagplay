@@ -1060,6 +1060,15 @@ void browser_run(const table *tb, void *ui) {
         case BREQ_HELP:   show_help(); break;
         case BREQ_STATS:  show_stats(&st); break;
         case BREQ_LS:     list_all(&st); break;
+        case BREQ_PAGE:
+            if (st.req_text) {
+                browser_raw_off();
+                printf("\x1b[2J\x1b[H%s\n[press Enter]", st.req_text);
+                fflush(stdout);
+                browser_raw_on();
+                getchar();
+            }
+            break;
         case BREQ_QUIT:   quit = 1; break;
         default: break;
         }

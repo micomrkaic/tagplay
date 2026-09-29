@@ -42,7 +42,7 @@ enum {
  * browser_key() call. */
 enum {
     BREQ_NONE = 0, BREQ_DETAIL, BREQ_ART, BREQ_HELP, BREQ_STATS,
-    BREQ_LS, BREQ_ENTER_VIEW, BREQ_QUIT
+    BREQ_LS, BREQ_ENTER_VIEW, BREQ_QUIT, BREQ_PAGE
 };
 
 typedef struct browser {
@@ -65,6 +65,7 @@ typedef struct browser {
     int    req;              /* BREQ_* */
     size_t req_ti;           /* table index for DETAIL/ART */
     const vec *req_items;    /* item vec for ENTER_VIEW */
+    const char *req_text;    /* text page for PAGE (app-owned buffer) */
     int    req_from_sel;
 } browser;
 
