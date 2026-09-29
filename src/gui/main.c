@@ -628,6 +628,13 @@ static void frame(gui *g) {
     snprintf(dl, sizeof dl, "dsp:%s",
              dsp_mode_name(player_dsp(g->pl)));
     draw_text(r, bx + 12, by + 4, dl, DIM);
+    {
+        player_status nps;
+        player_get_status(g->pl, &nps);
+        if (nps.null_output)
+            draw_text(r, bx + 12 + (int)(strlen(dl) + 2) * CW, by + 4,
+                      "(NO AUDIO)", HL);
+    }
     g->vol_r = (SDL_Rect){ g->w - pad - 22 * CW, by + CH / 2 - 2,
                            16 * CW, 8 };
     fill(r, g->vol_r, ROW);
@@ -1017,6 +1024,30 @@ static int selftest(gui *g) {
             }
         }
         CHK("clean vs processed diverge under am", d > 1e-6);
+        /* audio-fail witness + unlatch: force a device refusal, restart
+         * the track (out_open runs per track open), expect null_output
+         * and a loud note; clear the force, restart, expect recovery. */
+        setenv("TAGPLAY_FORCE_AUDIOFAIL", "1", 1);
+        push_key(SDLK_RETURN, 0);
+        pump(g);
+        int nwait = 0; player_status fs; fs.null_output = 0;
+        while (nwait < 4000) {
+            SDL_Delay(100); nwait += 100; tick(g);
+            player_get_status(g->pl, &fs);
+            if (fs.null_output) break;
+        }
+        CHK("audio failure is witnessed",
+            fs.null_output && strstr(fs.note, "refused") != NULL);
+        unsetenv("TAGPLAY_FORCE_AUDIOFAIL");
+        push_key(SDLK_RETURN, 0);
+        pump(g);
+        nwait = 0;
+        while (nwait < 4000) {
+            SDL_Delay(100); nwait += 100; tick(g);
+            player_get_status(g->pl, &fs);
+            if (!fs.null_output) break;
+        }
+        CHK("audio failure does not latch", !fs.null_output);
         /* full-file peaks build for a real file */
         player_status ps;
         player_get_status(g->pl, &ps);

@@ -76,7 +76,26 @@ struct player {
 
 #define QUEUE_HIGH_SECONDS 0.5
 
+/* one-shot witness on the shared note channel (both faces show it) */
+static void out_note(player *p, const char *msg) {
+    pthread_mutex_lock(&p->mu);
+    snprintf(p->note, sizeof p->note, "%s", msg);
+    p->note_seq++;
+    pthread_mutex_unlock(&p->mu);
+}
+
 static int out_open(player *p, int rate, int channels) {
+    if (getenv("TAGPLAY_FORCE_AUDIOFAIL")) {   /* selftest hook */
+        if (p->dev) { SDL_CloseAudioDevice(p->dev); p->dev = 0; }
+        p->null_output = 1;
+        char m[96];
+        snprintf(m, sizeof m,
+                 "audio device refused %d kHz \xe2\x80\x94 playing silently",
+                 rate / 1000);
+        out_note(p, m);
+        p->dev_rate = rate; p->dev_channels = channels;
+        return 0;
+    }
     if (p->dev && p->dev_rate == rate && p->dev_channels == channels)
         return 0; /* gapless: same format, keep device */
     if (p->dev) {
@@ -88,9 +107,14 @@ static int out_open(player *p, int rate, int channels) {
     }
     p->dev_rate = rate;
     p->dev_channels = channels;
-    if (p->null_output) return 0;
+    int was_null = p->null_output;
+    p->null_output = 0;              /* every open is a fresh attempt */
     if (!p->sdl_ready) {
-        if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) { p->null_output = 1; return 0; }
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+            p->null_output = 1;
+            out_note(p, "audio init failed \xe2\x80\x94 playing silently");
+            return 0;
+        }
         p->sdl_ready = 1;
     }
     SDL_AudioSpec want, have;
@@ -101,8 +125,22 @@ static int out_open(player *p, int rate, int channels) {
     want.samples = 4096;
     want.callback = NULL; /* queue mode */
     p->dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (!p->dev) { p->null_output = 1; return 0; }
+    if (!p->dev) {
+        p->null_output = 1;
+        char m[96];
+        snprintf(m, sizeof m,
+                 "audio device refused %d kHz \xe2\x80\x94 playing silently",
+                 rate / 1000);
+        out_note(p, m);
+        return 0;
+    }
     SDL_PauseAudioDevice(p->dev, 0);
+    if (was_null) {
+        char m[64];
+        snprintf(m, sizeof m, "audio device recovered \xe2\x80\x94 %d kHz",
+                 rate / 1000);
+        out_note(p, m);
+    }
     return 0;
 }
 
@@ -133,7 +171,15 @@ static void out_write(player *p, const float *buf, long frames) {
         return;
     }
     Uint32 nbytes = (Uint32)(frames * p->dev_channels * (long)sizeof(float));
-    if (SDL_QueueAudio(p->dev, buf, nbytes) < 0) { p->null_output = 1; return; }
+    if (SDL_QueueAudio(p->dev, buf, nbytes) < 0) {
+        p->null_output = 1;
+        char m[96];
+        snprintf(m, sizeof m,
+                 "audio queue failed at %d kHz \xe2\x80\x94 playing silently",
+                 p->dev_rate / 1000);
+        out_note(p, m);
+        return;
+    }
     Uint32 high = (Uint32)(QUEUE_HIGH_SECONDS * p->dev_rate) *
                   (Uint32)p->dev_channels * (Uint32)sizeof(float);
     while (SDL_GetQueuedAudioSize(p->dev) > high) {
