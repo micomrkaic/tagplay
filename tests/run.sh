@@ -33,6 +33,12 @@ chk "path-fallback tags"      1 'thunder'
 chk "OR"                      2 'gould | radiohead'
 chk "quoted expression"       3 "'year < 1800'"
 chk "quoted phrase substring" 1 "'No. 1: Adagio'"
+# dsp off-boundary: mode<->off transitions must not step the waveform
+cc -Isrc/core -Isrc/play -std=c17 -O2 -D_GNU_SOURCE -o /tmp/tp_click tests/click_probe.c \
+   src/play/effects.o src/play/engine.o src/core/util.o -lm -lpthread 2>/dev/null
+if /tmp/tp_click >/dev/null 2>&1; then echo "ok   off<->mode transitions click-free"
+else echo "FAIL off<->mode transitions click-free"; fail=1; fi
+
 # fft chrome: no TAB view may paint taller than the terminal
 if python3 tests/check_fft_chrome.py "$LIB"; then :; else fail=1; fi
 exit $fail

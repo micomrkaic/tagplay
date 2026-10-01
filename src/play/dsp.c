@@ -91,6 +91,9 @@ struct dsp_chain {
 
     double   match_gain;
     int      gain_set;
+    size_t   fade_in_left;   /* frames of clean->processed blend on (re)prime */
+    size_t   off_fade_left;  /* frames of processed->clean blend while off_pending */
+    int      off_pending;    /* "off" requested: fade out, then really switch */
 
     double  *rbuf, *chan, *chan2;   /* render scratch                     */
     size_t   rcap, chcap;           /* frames                             */
@@ -113,6 +116,9 @@ static void pipeline_reset(dsp_chain *c) {
     c->tail_ok = 0;
     c->gain_set = 0;
     c->match_gain = HEADROOM;
+    c->fade_in_left = 0;
+    c->off_fade_left = 0;
+    c->off_pending = 0;
 }
 
 dsp_chain *dsp_create(void) {
@@ -253,6 +259,16 @@ int dsp_set_mode(dsp_chain *c, const char *mode, double amount) {
     else if (!strcmp(mode, "am"))    m = M_AM;
     else return -1;
     pthread_mutex_lock(&c->mu);
+    if (m == M_OFF && c->mode != M_OFF && c->mode != M_EQ
+        && c->mode != M_TONE && c->qlen > 0 && !c->off_pending) {
+        /* keep rendering the old mode; the emission loop fades the
+         * output into the clean stream, then completes the switch */
+        c->off_pending = 1;
+        c->off_fade_left = X_FRAMES;
+        pthread_mutex_unlock(&c->mu);
+        return 0;
+    }
+    c->off_pending = 0;
     int fresh = (m != c->mode);
     if (fresh) mode_flip(c);
     c->mode = m;
@@ -469,6 +485,7 @@ void dsp_process(dsp_chain *c, float *buf, long frames) {
     float g = (float)c->gain;
     long n = frames * c->channels;
 
+    int ch = c->channels;
     if (c->mode == M_OFF || c->rate <= 0) {
         if (c->clen || c->qlen) pipeline_reset(c); /* lazily drop pipeline */
         if (g != 1.0f)
@@ -476,7 +493,6 @@ void dsp_process(dsp_chain *c, float *buf, long frames) {
         pthread_mutex_unlock(&c->mu);
         return;
     }
-
     clean_append(c, buf, frames);
     while (c->cbase + c->clen >= c->t + B_FRAMES + X_FRAMES + PAD_FRAMES)
         if (render_block(c)) break;
@@ -485,12 +501,40 @@ void dsp_process(dsp_chain *c, float *buf, long frames) {
     size_t avail = c->qlen - c->qrd;
     size_t take = (size_t)frames < avail ? (size_t)frames : avail;
     size_t lead = (size_t)frames - take;   /* only during priming */
-    memset(buf, 0, lead * (size_t)c->channels * sizeof(float));
-    const float *src = c->outq + c->qrd * (size_t)c->channels;
-    float *dst = buf + lead * (size_t)c->channels;
-    for (size_t i = 0; i < take * (size_t)c->channels; i++)
-        dst[i] = src[i] * g;
+    /* while the pipeline primes, pass the clean input through (already
+     * in buf) instead of emitting silence, and arm a clean->processed
+     * crossfade for the moment real output arrives */
+    if (lead) {
+        c->fade_in_left = X_FRAMES;
+        if (g != 1.0f)
+            for (size_t i = 0; i < lead * (size_t)ch; i++) buf[i] *= g;
+    }
+    const float *src = c->outq + c->qrd * (size_t)ch;
+    float *dst = buf + lead * (size_t)ch;
+    for (size_t i = 0; i < take; i++) {
+        double pw = 1.0;
+        if (c->fade_in_left) {
+            pw = 1.0 - (double)c->fade_in_left / (double)X_FRAMES;
+            c->fade_in_left--;
+        }
+        if (c->off_pending && c->off_fade_left) {
+            /* fade the processed share back to zero: net weight of the
+             * processed stream falls, the clean stream (already in
+             * dst) rises */
+            pw *= (double)c->off_fade_left / (double)X_FRAMES;
+            c->off_fade_left--;
+        } else if (c->off_pending) pw = 0.0;
+        for (int cc = 0; cc < ch; cc++) {
+            size_t k = i * (size_t)ch + (size_t)cc;
+            dst[k] = (float)(src[k] * pw + dst[k] * (1.0 - pw)) * g;
+        }
+    }
     c->qrd += take;
+    if (c->off_pending && !c->off_fade_left) {
+        pipeline_reset(c);           /* fade complete: become truly off */
+        c->mode = M_OFF;
+        derive_params(c);
+    }
     c->emitted += (uint64_t)frames;
     pthread_mutex_unlock(&c->mu);
 }
