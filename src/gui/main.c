@@ -372,7 +372,7 @@ static void draw_instruments(gui *g, const player_status *ps) {
         int np = dsp_param_count(md);
         int colw = (g->fx_r.w - 12) / 2;
         int py0 = sy + CH + 8;
-        for (int i = 0; i < np && i < 12; i++) {
+        for (int i = 0; i < np && i < 10; i++) {
             const char *nm, *un;
             double lo, hi, cur = 0;
             int ii, il;
@@ -385,7 +385,9 @@ static void draw_instruments(gui *g, const player_status *ps) {
             else if (fabs(cur) >= 100)
                 snprintf(vt, sizeof vt, "%.0f%s", cur, un);
             else snprintf(vt, sizeof vt, "%.2g%s", cur, un);
-            int col = i / 6, row = i % 6;
+            /* 5 rows per column: row 5 would land on the THD strip
+             * at the panel foot (am's 8th, tape's 10th parameter) */
+            int col = i / 5, row = i % 5;
             slider(g, (SDL_Rect){ g->fx_r.x + 6 + col * colw,
                                   py0 + row * (CH + 6),
                                   colw - 6, CH },
