@@ -33,4 +33,6 @@ chk "path-fallback tags"      1 'thunder'
 chk "OR"                      2 'gould | radiohead'
 chk "quoted expression"       3 "'year < 1800'"
 chk "quoted phrase substring" 1 "'No. 1: Adagio'"
+# fft chrome: no TAB view may paint taller than the terminal
+if python3 tests/check_fft_chrome.py "$LIB"; then :; else fail=1; fi
 exit $fail

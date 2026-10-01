@@ -319,7 +319,8 @@ static void redraw_queue(browser *st) {
 
     int rows = term_rows();
     int cols = term_cols();
-    int chrome = 7 + (st->msg[0] ? 2 : 0);
+    int chrome = 7 + (st->msg[0] ? 2 : 0)
+               + ((CUI(st)->fft_on && ps.playing) ? FFT_ROWS + 1 : 0);
     int avail = rows - chrome;
     if ((size_t)avail < st->qview.len) avail--;   /* "… more" line */
     if (avail < 3) avail = 3;
