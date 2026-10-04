@@ -62,4 +62,5 @@ mkdir -p "$DEST/Radiohead/OK Computer"; mkstereo 44100
 lame --quiet --tt "Paranoid Android" --ta "Radiohead" --tl "OK Computer" \
      --ty 1997 --tn 2 --tg "Alternative" /tmp/_fixture.wav \
      "$DEST/Radiohead/OK Computer/02 Paranoid Android.mp3"
+touch "$DEST/.tagplay-fixtures"   # sentinel: marks a selftest-safe library
 echo "fixtures in $DEST"

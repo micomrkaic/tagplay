@@ -76,6 +76,11 @@ struct player {
 
 #define QUEUE_HIGH_SECONDS 0.5
 
+/* selftest hook: force every device open to fail. A plain int, not an
+ * environment variable -- setenv() from one thread while another runs
+ * getenv() is undefined, and macOS libc actually crashes on it. */
+int player_test_audiofail = 0;
+
 /* one-shot witness on the shared note channel (both faces show it) */
 static void out_note(player *p, const char *msg) {
     pthread_mutex_lock(&p->mu);
@@ -85,7 +90,7 @@ static void out_note(player *p, const char *msg) {
 }
 
 static int out_open(player *p, int rate, int channels) {
-    if (getenv("TAGPLAY_FORCE_AUDIOFAIL")) {   /* selftest hook */
+    if (player_test_audiofail) {               /* selftest hook */
         if (p->dev) { SDL_CloseAudioDevice(p->dev); p->dev = 0; }
         p->null_output = 1;
         char m[96];

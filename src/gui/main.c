@@ -30,6 +30,8 @@
  * --selftest drives the real loop headless under SDL's dummy driver. */
 
 #include <SDL.h>
+#include <unistd.h>
+#include <limits.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -1029,7 +1031,7 @@ static int selftest(gui *g) {
         /* audio-fail witness + unlatch: force a device refusal, restart
          * the track (out_open runs per track open), expect null_output
          * and a loud note; clear the force, restart, expect recovery. */
-        setenv("TAGPLAY_FORCE_AUDIOFAIL", "1", 1);
+        player_test_audiofail = 1;
         push_key(SDLK_RETURN, 0);
         pump(g);
         int nwait = 0; player_status fs; fs.null_output = 0;
@@ -1040,7 +1042,7 @@ static int selftest(gui *g) {
         }
         CHK("audio failure is witnessed",
             fs.null_output && strstr(fs.note, "refused") != NULL);
-        unsetenv("TAGPLAY_FORCE_AUDIOFAIL");
+        player_test_audiofail = 0;
         push_key(SDLK_RETURN, 0);
         pump(g);
         nwait = 0;
@@ -1380,6 +1382,20 @@ void web_rescan(void) {
 
 int main(int argc, char **argv) {
     int st = argc > 1 && !strcmp(argv[1], "--selftest");
+    if (st && argc > 2) {
+        /* the selftest is a scripted play against the fixture library;
+         * running it on a real collection asserts nonsense and is
+         * refused outright (tests/make_fixtures.sh DIR makes one) */
+        char sent[PATH_MAX];
+        snprintf(sent, sizeof sent, "%s/.tagplay-fixtures", argv[2]);
+        if (access(sent, F_OK) != 0) {
+            fprintf(stderr, "tagplay-gui: --selftest needs the fixture "
+                    "library, not a music collection.\n"
+                    "  ./tests/make_fixtures.sh /tmp/testlib && "
+                    "./tagplay-gui --selftest /tmp/testlib\n");
+            return 2;
+        }
+    }
     if (argc <= (st ? 2 : 1)) {
         fprintf(stderr,
                 "usage: tagplay-gui [--selftest] MUSIC_DIR...\n");

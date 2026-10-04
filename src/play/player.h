@@ -59,5 +59,6 @@ typedef struct {
     unsigned note_seq;
 } player_status;
 void player_get_status(player *p, player_status *st);
+extern int player_test_audiofail;   /* selftest only: fail device opens */
 
 #endif
