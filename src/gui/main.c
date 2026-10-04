@@ -63,6 +63,7 @@
 
 typedef struct {
     SDL_Renderer *r;
+    SDL_Surface *st_surf;      /* selftest software-renderer target */
     SDL_Window   *win;
     browser  b;              /* THE state: shared with the TUI's loop */
     player  *pl;
@@ -1440,9 +1441,25 @@ int main(int argc, char **argv) {
     g.win = SDL_CreateWindow("tagplay",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         WIN_W, WIN_H, SDL_WINDOW_RESIZABLE);
+    if (!g.win) {
+        fprintf(stderr, "tagplay-gui: window: %s\n", SDL_GetError());
+        return 1;
+    }
     g.r = SDL_CreateRenderer(g.win, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!g.r) g.r = SDL_CreateRenderer(g.win, -1, 0);
+    if (!g.r && st) {
+        /* the dummy video driver backs no GPU renderer on some
+         * platforms (macOS); the selftest draws into a software
+         * renderer on a plain surface instead */
+        g.st_surf = SDL_CreateRGBSurfaceWithFormat(0, WIN_W, WIN_H,
+                        32, SDL_PIXELFORMAT_ARGB8888);
+        if (g.st_surf) g.r = SDL_CreateSoftwareRenderer(g.st_surf);
+    }
+    if (!g.r) {
+        fprintf(stderr, "tagplay-gui: renderer: %s\n", SDL_GetError());
+        return 1;
+    }
     if (text_init(g.r, 17.0f)) {
         fprintf(stderr, "tagplay-gui: font atlas failed\n");
         return 1;
