@@ -312,79 +312,212 @@ int vinyl_process(double *buf, size_t n, double fs,
 /* ====================================================================== */
 
 const am_params AM_DEFAULTS = {
-    .bw_hz = 4500.0, .hp_hz = 120.0, .depth = 0.95, .comp = 0.5,
-    .static_per_s = 4.0, .static_db = -36.0, .hiss_db = -55.0,
-    .fade_db = 0.0,
+    .bw_hz = 3500.0, .hp_hz = 150.0, .depth = 0.95, .comp = 0.875,
+    .static_per_s = 2.0, .static_db = -30.0, .snr_db = 45.0,
+    .fade_db = 0.0, .fade_hz = 0.25,
+    .whistle_db = -130.0, .whistle_hz = 10000.0,
+    .det_rc_us = 60.0, .acdc = 0.8,
 };
 
-/* Broadcast AM chain, mono by nature (the caller folds channels):
- * transmitter compression / receiver AGC, envelope detection with
- * overmodulation fold when depth > 1, the channel + IF band (4th-order
- * top), atmospheric static crashes (band-limited by riding through the
- * same filters), post-detector hiss, and optional slow skywave fade.
- * Broadcast AM is DSB; a "communications" flavor is simply a narrower
- * bw_hz. No delay line, so no latency to compensate.                  */
+/* Night-time skywave: deep fades, more crashes, lower carrier-to-noise,
+ * and the neighbouring channel's carrier whistling at the spacing.     */
+const am_params AM_NIGHT = {
+    .bw_hz = 3500.0, .hp_hz = 150.0, .depth = 0.95, .comp = 0.875,
+    .static_per_s = 6.0, .static_db = -24.0, .snr_db = 35.0,
+    .fade_db = 20.0, .fade_hz = 0.25,
+    .whistle_db = -40.0, .whistle_hz = 10000.0,
+    .det_rc_us = 60.0, .acdc = 0.8,
+};
+
+#define AM_REF  0.1     /* TX AGC target RMS, -20 dBFS                  */
+#define AM_MOD  3.16    /* AGC output -> modulation: ~10 dB crest       */
+#define AM_POS  1.25    /* +125% positive peaks (US limit)              */
+#define AM_NEG  0.98    /* -98%: the clipper stays short of cutoff      */
+
+static double am_hash01(uint64_t k)              /* splitmix64 -> [0,1) */
+{
+    uint64_t z = k + 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    z ^= z >> 31;
+    return (double)(z >> 11) / 9007199254740992.0;
+}
+
+/* Smooth random 0..1 as a pure function of ABSOLUTE time. A seeded
+ * filtered-noise process would restart differently in every streaming
+ * render (each starts at its own pre-roll), and the seam crossfade
+ * would blend two different fade levels.                               */
+static double am_vnoise(double x, uint64_t salt)
+{
+    double fl = floor(x), f = x - fl;
+    uint64_t k = (uint64_t)(int64_t)fl;
+    double a = am_hash01(k ^ salt), b = am_hash01((k + 1) ^ salt);
+    f = f * f * (3.0 - 2.0 * f);
+    return a + (b - a) * f;
+}
+
+/* Skywave fading: 'flat' scales the whole signal (the AGC hides it, but
+ * the fixed noise floor swells); 'sel' is carrier-only selective fading
+ * (sidebands exceed the carrier -> detector distortion). Squared shape:
+ * deep fades are rarer than shallow ones.                              */
+static void am_fade(double t, const am_params *p, double *flat, double *sel)
+{
+    if (p->fade_db <= 0.0) { *flat = *sel = 1.0; return; }
+    double u = am_vnoise(t * p->fade_hz,       0x5ca1ab1e0ddba11ULL);
+    double w = am_vnoise(t * p->fade_hz * 1.7, 0xfadedfadedfade01ULL);
+    *flat = pow(10.0, -p->fade_db * u * u / 20.0);
+    *sel  = pow(10.0, -p->fade_db / 3.0 * w * w / 20.0);
+}
+
+static void am_gauss2(uint64_t *s, double *g1, double *g2)
+{
+    double r  = sqrt(-2.0 * log(1.0 - frand(s)));
+    double ph = 2.0 * M_PI * frand(s);
+    *g1 = r * cos(ph);
+    *g2 = r * sin(ph);
+}
+
+/* Broadcast AM, transmitter to loudspeaker. Mono by nature (the caller
+ * folds channels). Complex-baseband model; no RF carrier is synthesised.
+ *
+ *  TX : 50 Hz HP -> NRSC-1 75 us / 8.7 kHz pre-emphasis -> RMS AGC
+ *       (target -20 dBFS, ratio 1/(1-comp), lift capped at +12 dB)
+ *       -> asymmetric soft clipper (+125% / -98%) -> depth;
+ *       depth > 1 drives past the clipper: carrier cutoff at -100%.
+ *  CH : skywave fading (flat + carrier-selective), Gaussian noise at
+ *       snr_db re carrier, atmospheric crashes, adjacent-channel carrier.
+ *  RX : 8th-order Butterworth IF (lowpass equivalent, I and Q rails)
+ *       BEFORE detection, so noise and crashes are band-limited like
+ *       the signal -> ideal diode + RC envelope detector (diagonal
+ *       clipping) -> Rac/Rdc negative-peak clipping -> AVC (0.1 s)
+ *       -> coupling caps + speaker HP. No de-emphasis, as in most sets.
+ *
+ * Stateless per call. Everything that must agree between overlapping
+ * streaming renders (fade, whistle phase) is a function of absolute
+ * time t0 + i/fs; filter, AGC and AVC state settle well inside the
+ * live pre-roll (371 ms). Noise is seeded from t0, like the other media. */
 int am_process(double *buf, size_t n, double fs,
                const am_params *p, double t0)
 {
-    biquad hp, lp1, lp2;
-    bq_design(&hp,  BQ_HIGHPASS, fs, p->hp_hz, 0.7071, 0.0);
-    bq_design(&lp1, BQ_LOWPASS,  fs, p->bw_hz, 0.7071, 0.0);
-    bq_design(&lp2, BQ_LOWPASS,  fs, p->bw_hz, 0.7071, 0.0);
+    if (n == 0) return 0;
+    double bw = p->bw_hz < 0.45 * fs ? p->bw_hz : 0.45 * fs;
 
-    uint64_t tmix = (uint64_t)(t0 * 1000.0) * 0x100000001b3ULL;
+    /* ---- transmitter filters ---- */
+    biquad hp_tx, pre;
+    bq_design(&hp_tx, BQ_HIGHPASS, fs, 50.0, 0.7071, 0.0);
+    {   /* bilinear (1 + s t1)/(1 + s t2): unity at DC, +12.3 dB top  */
+        double K = 2.0 * fs, t1 = 75e-6, t2 = 1.0 / (2.0 * M_PI * 8700.0);
+        double a0 = 1.0 + K * t2;
+        pre.b0 = (1.0 + K * t1) / a0;
+        pre.b1 = (1.0 - K * t1) / a0;
+        pre.b2 = 0.0;
+        pre.a1 = (1.0 - K * t2) / a0;
+        pre.a2 = 0.0;
+        pre.s1 = pre.s2 = 0.0;
+    }
+
+    /* ---- receiver IF: 8th-order Butterworth, low-Q sections first ---- */
+    biquad ifI[4], ifQ[4];
+    for (int k = 0; k < 4; k++) {
+        double th = M_PI * (double)(2 * k + 1) / 16.0;
+        bq_design(&ifI[k], BQ_LOWPASS, fs, bw, 1.0 / (2.0 * cos(th)), 0.0);
+        ifQ[k] = ifI[k];
+    }
+    double eh = 0.0;                      /* noise gain: sum of h^2     */
+    {
+        biquad tq[4];
+        memcpy(tq, ifI, sizeof tq);
+        size_t L = (size_t)(0.05 * fs);
+        for (size_t i = 0; i < L; i++) {
+            double h = i ? 0.0 : 1.0;
+            for (int k = 0; k < 4; k++) h = bq_tick(&tq[k], h);
+            eh += h * h;
+        }
+    }
+    biquad hp_rx;
+    bq_design(&hp_rx, BQ_HIGHPASS, fs, p->hp_hz, 0.7071, 0.0);
+
+    /* ---- TX AGC: RMS detector seeded from the first 50 ms, so a
+     *      render head (ABX clip, stream start) gets no +12 dB burst ---- */
+    double ac = exp(-1.0 / (0.030 * fs));
+    double ms = 0.0;
+    {
+        size_t L = (size_t)(0.05 * fs);
+        if (L > n) L = n;
+        for (size_t i = 0; i < L; i++) ms += buf[i] * buf[i];
+        ms /= (double)(L ? L : 1);
+    }
+
+    /* ---- channel ---- */
+    uint64_t tmix  = (uint64_t)(t0 * 1000.0) * 0x100000001b3ULL;
+    uint64_t nseed = 0xbeefbeefbeef0001ULL ^ tmix;
     uint64_t sseed = 0xa11ceedbadc0ffeeULL ^ tmix;
-    uint64_t hseed = 0xbeefbeefbeef0001ULL ^ tmix;
-    double stg = pow(10.0, p->static_db / 20.0);
-    double hg  = pow(10.0, p->hiss_db / 20.0) * 1.7320508;
+    double sig = sqrt(pow(10.0, -p->snr_db / 10.0) / (2.0 * eh));
     double pst = p->static_per_s / fs;
+    double stg = 8.0 * pow(10.0, p->static_db / 20.0) * fs / 44100.0;
+    double W   = (p->whistle_db > -120.0 && p->whistle_hz < 0.5 * fs)
+               ? pow(10.0, p->whistle_db / 20.0) : 0.0;
+    double ph  = fmod(2.0 * M_PI * p->whistle_hz * t0, 2.0 * M_PI);
+    double dph = 2.0 * M_PI * p->whistle_hz / fs;
 
-    double env = 0.0;
-    double att = exp(-1.0 / (0.005 * fs));
-    double rel = exp(-1.0 / (0.200 * fs));
-    const double REF = 0.25;
-
-    double phf  = fmod(2.0 * M_PI * 0.15 * t0, 2.0 * M_PI);
-    double dphf = 2.0 * M_PI * 0.15 / fs;
-    double m = p->depth > 0.05 ? p->depth : 0.05;
+    /* ---- detector + AVC ---- */
+    double flat, sel;
+    am_fade(t0, p, &flat, &sel);
+    double drc  = exp(-1.0 / (p->det_rc_us * 1e-6 * fs));
+    double aavc = exp(-1.0 / (0.1 * fs));
+    double v    = flat * sel;
+    double cest = flat * sel;
+    double floor_k = 1.0 - p->acdc;
 
     for (size_t i = 0; i < n; i++) {
-        double x = buf[i];
-
-        /* compression / AGC: downward on loud, gentle lift on quiet,
-         * capped at +12 dB so silence is not noise-pumped              */
-        double a = fabs(x);
-        env = a > env ? att * env + (1 - att) * a
-                      : rel * env + (1 - rel) * a;
+        /* transmitter */
+        double x = bq_tick(&pre, bq_tick(&hp_tx, buf[i]));
+        ms = ac * ms + (1.0 - ac) * x * x;
         if (p->comp > 0.0) {
-            double g = pow(REF / (env > 1e-4 ? env : 1e-4), p->comp);
-            if (g > 4.0) g = 4.0;
-            x *= g;
+            double r = sqrt(ms);
+            double g = pow(AM_REF / (r > 1e-5 ? r : 1e-5), p->comp);
+            x *= g < 4.0 ? g : 4.0;
         }
+        x *= AM_MOD;
+        x = x > 0.0 ? AM_POS * tanh(x / AM_POS) : AM_NEG * tanh(x / AM_NEG);
+        double m = p->depth * x;
+        if (m < -1.0) m = -1.0;             /* carrier cutoff            */
 
-        /* envelope detection: transparent below 100% modulation,
-         * rectification fold above                                    */
-        double e = 1.0 + m * x;
-        double y = (fabs(e) - 1.0) / m;
-
-        /* atmospheric crash injected pre-filter (band-limits itself)  */
+        /* channel */
+        am_fade(t0 + (double)i / fs, p, &flat, &sel);
+        double nI, nQ;
+        am_gauss2(&nseed, &nI, &nQ);
+        nI *= sig;
+        nQ *= sig;
         if (pst > 0.0 && frand(&sseed) < pst) {
-            double a2 = exp(2.5 * (frand(&sseed) - 1.0));
-            y += 8.0 * stg * a2 * (frand(&sseed) < 0.5 ? -1.0 : 1.0);
+            double a  = stg * exp(2.5 * (frand(&sseed) - 1.0));
+            double pc = 2.0 * M_PI * frand(&sseed);
+            nI += a * cos(pc);
+            nQ += a * sin(pc);
         }
 
-        y = bq_tick(&hp,  y);
-        y = bq_tick(&lp1, y);
-        y = bq_tick(&lp2, y);
-
-        y += hg * frand2(&hseed);
-
-        if (p->fade_db > 0.0) {
-            y *= pow(10.0, (p->fade_db * 0.5 *
-                            (sin(phf) - 1.0)) / 20.0);
-            phf += dphf;
+        /* receiver IF: sidebands + noise; the carrier sits at DC       */
+        double sI = flat * m + nI, sQ = nQ;
+        for (int k = 0; k < 4; k++) {
+            sI = bq_tick(&ifI[k], sI);
+            sQ = bq_tick(&ifQ[k], sQ);
         }
-        buf[i] = y;
+        sI += flat * sel;
+        if (W > 0.0) {
+            sI += W * cos(ph);
+            sQ += W * sin(ph);
+            ph += dph;
+            if (ph > 2.0 * M_PI) ph -= 2.0 * M_PI;
+        }
+
+        /* envelope detector: ideal diode, RC discharge                 */
+        double e = sqrt(sI * sI + sQ * sQ);
+        v = e > v * drc ? e : v * drc;
+        cest = aavc * cest + (1.0 - aavc) * v;
+        double vc = v > floor_k * cest ? v : floor_k * cest;
+        double y  = vc / (cest > 1e-4 ? cest : 1e-4) - 1.0;
+
+        buf[i] = bq_tick(&hp_rx, y);       /* 1.0 = 100% modulation */
     }
     return 0;
 }

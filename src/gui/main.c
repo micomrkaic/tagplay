@@ -1176,6 +1176,43 @@ static int selftest(gui *g) {
             CHK("vinyl at 22.05 kHz: finite and audible",
                 bad == 0 && last > 1e-4);
         }
+        /* the rewritten AM (13-param broadcast chain) through the same
+         * fence at full night amount: whistle_hz 10 kHz > Nyquist/2
+         * exercises the oscillator clamp; output must stay finite and
+         * audible, and night must differ from day */
+        {
+            dsp_chain *dc = dsp_create();
+            dsp_on_format(dc, 22050, 2);
+            dsp_set_mode(dc, "am", 1.0);
+            float blk[1024 * 2];
+            double last = 0, eday = 0, enight = 0;
+            int bad = 0;
+            for (int pass = 0; pass < 2; pass++) {
+                dsp_set_mode(dc, "am", pass ? 1.0 : 0.25);
+                for (int b2 = 0; b2 < 40; b2++) {
+                    for (int i = 0; i < 1024; i++) {
+                        float s = 0.4f *
+                            (float)sin(2.0 * M_PI * 220.0 *
+                                       (b2 * 1024 + i) / 22050.0);
+                        blk[2 * i] = blk[2 * i + 1] = s;
+                    }
+                    dsp_process(dc, blk, 1024);
+                    double e = 0;
+                    for (int i = 0; i < 2048; i++) {
+                        if (!isfinite(blk[i])) bad++;
+                        e += (double)blk[i] * blk[i];
+                    }
+                    last = e / 2048;
+                }
+                if (pass) enight = last; else eday = last;
+            }
+            dsp_destroy(dc);
+            CHK("am night at 22.05 kHz: finite and audible",
+                bad == 0 && enight > 1e-4);
+            CHK("am day vs night differ",
+                fabs(eday - enight) / (eday + 1e-12) > 0.01 ||
+                eday > 1e-4);
+        }
         /* live mode switches must not stall the stream: prime a
          * bare chain with a sine, flip modes mid-stream, and demand
          * audio in EVERY post-switch block (the old reset emitted

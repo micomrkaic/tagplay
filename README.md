@@ -249,14 +249,25 @@ groove hisses identically into both speakers. 12 cents of 1.3 Hz
 eccentricity wow, dense crackle (120/s), abrasive-filler hiss.
 Cranking `amount` past 1.2× calibration drops you into the horn era.
 
-**am** — the full broadcast chain, mono: transmitter compression /
-receiver AGC (attack/release envelope, capped at +12 dB so silence
-never pumps), envelope detection with overmodulation fold above 100 %
-(depth = 0.80 + 0.30·s), the channel + IF band as a 4th-order
-4.5 kHz lowpass with 120 Hz highpass, band-limited atmospheric
-static crashes riding through the same filters, post-detector hiss,
-and slow skywave fading above amount 0.7. A narrower `bw` gives the
-communications-receiver flavor.
+**am** — the full broadcast chain, mono, vendored from audiotard's
+v0.10.3 receiver rewrite: transmitter compression (`comp`, exponent
+of the AGC law), modulation with overmodulation fold above 100 %
+(`depth` = 0.80 + 0.30·s, capped at 1.40), carrier-domain noise at a
+true carrier-to-noise ratio (`snr`, so atmospherics distort through
+the detector instead of being pasted on afterwards), a modeled
+envelope detector — RC time constant (`detrc`, 60 µs default) for
+diagonal clipping on fast HF decay, AC/DC load ratio (`acdc`) for
+negative-peak clipping — an 8th-order Butterworth IF/audio bandwidth
+(`bw`, 3.5 kHz default) with receiver coupling highpass (`hp`,
+150 Hz), carrier-referenced static crashes, two-component skywave
+fading (flat + frequency-selective, `fade`/`fadehz`), and the
+adjacent channel's heterodyne whistle (`whistle`/`whisthz`, 10 kHz
+Americas / 9 kHz elsewhere). The amount knob is a day→night morph:
+0 ≈ clean strong local signal (carrier SNR up to 65 dB), 0.5 =
+audiotard's calibrated daytime defaults, 1 = the AM_NIGHT skywave
+preset — deep selective fades, 6 crashes/s, 35 dB carrier, and the
+neighbour whistling at −40 dB. Thirteen parameters: ten on the GUI
+panel, `whisthz`/`detrc`/`acdc` via `:dsp set`.
 
 **eq** — ten peaking biquads at the ISO octave centers
 31.5 Hz…16 kHz, Q = 1.414, ±18 dB. **tone** — a 120 Hz low shelf and

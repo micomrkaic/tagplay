@@ -190,17 +190,33 @@ static void derive_params(dsp_chain *c) {
         c->shp.crackle_db += sdb;
         c->shp.hiss_db    += sdb;
         break;
-    case M_AM:
+    case M_AM: {
         c->use_am = 1;
+        /* day -> night morph: 0 = strong local daytime signal,
+         * 0.5 = audiotard's calibrated AM_DEFAULTS, 1 = AM_NIGHT
+         * skywave DX (deep selective fades, crashes, the adjacent
+         * channel's 10 kHz heterodyne). */
+        double nt = c->amount <= 0.5 ? 0.0 : (c->amount - 0.5) * 2.0;
+#define AMLERP(f) (AM_DEFAULTS.f + nt * (AM_NIGHT.f - AM_DEFAULTS.f))
         c->ap = AM_DEFAULTS;
         c->ap.depth = 0.80 + 0.30 * s;   /* > 1.0: overmodulation fold */
+        if (c->ap.depth > 1.40) c->ap.depth = 1.40;
         c->ap.comp  = 0.35 * s;
         if (c->ap.comp > 1.0) c->ap.comp = 1.0;
-        c->ap.static_per_s *= s;
-        c->ap.static_db += sdb;
-        c->ap.hiss_db   += sdb;
-        c->ap.fade_db = c->amount > 0.7 ? 10.0 * (c->amount - 0.7) : 0.0;
+        if (nt <= 0.0) {                 /* day half: cleaner below 0.5 */
+            c->ap.static_per_s *= s;
+            c->ap.static_db += sdb;
+            c->ap.snr_db += (1.0 - s) * 20.0;   /* up to 65 dB carrier */
+        } else {                         /* night half: toward skywave */
+            c->ap.static_per_s = AMLERP(static_per_s);
+            c->ap.static_db    = AMLERP(static_db);
+            c->ap.snr_db       = AMLERP(snr_db);
+            c->ap.fade_db      = AMLERP(fade_db);
+            c->ap.whistle_db   = AMLERP(whistle_db);
+        }
+#undef AMLERP
         break;
+    }
     case M_EQ:   c->use_eq = 1; break;   /* bands set via dsp_set_eq   */
     case M_TONE: c->use_tone = 1; break; /* dials via dsp_set_tone     */
     default:
@@ -359,6 +375,7 @@ static int render_block(dsp_chain *c) {
     if (vp_s.hp_hz  > nyq) vp_s.hp_hz  = nyq;
     if (ap_s.bw_hz  > nyq) ap_s.bw_hz  = nyq;
     if (ap_s.hp_hz  > nyq) ap_s.hp_hz  = nyq;
+    if (ap_s.whistle_hz > nyq) ap_s.whistle_hz = nyq;
     uint64_t pr = (c->use_tape || c->use_vinyl ||
                    c->use_shellac || c->use_am) ? PR_MEDIA : PR_SHAPE;
     uint64_t pre  = c->t > pr ? c->t - pr : 0;
@@ -587,8 +604,14 @@ static const pdesc PTAB[] = {
     P(M_AM,     "comp",    "",    0.0,   1.0,  ap.comp,         0, 0),
     P(M_AM,     "static",  "/s",  0.0,  20.0,  ap.static_per_s, 0, 0),
     P(M_AM,     "statdb",  "dB", -60.0,  0.0,  ap.static_db,    0, 0),
-    P(M_AM,     "hiss",    "dB", -80.0,-20.0,  ap.hiss_db,      0, 0),
+    P(M_AM,     "snr",     "dB",  10.0, 80.0,  ap.snr_db,       0, 0),
     P(M_AM,     "fade",    "dB",  0.0,  30.0,  ap.fade_db,      0, 0),
+    P(M_AM,     "fadehz",  "Hz",  0.05,  1.0,  ap.fade_hz,      0, 0),
+    P(M_AM,     "whistle", "dB",-130.0,-20.0,  ap.whistle_db,   0, 0),
+    /* receiver internals past the 10-slider panel: :dsp set only */
+    P(M_AM,     "whisthz", "Hz", 5000, 11000,  ap.whistle_hz,   0, 0),
+    P(M_AM,     "detrc",   "us",  20.0,300.0,  ap.det_rc_us,    0, 0),
+    P(M_AM,     "acdc",    "",    0.5,   1.0,  ap.acdc,         0, 0),
 };
 #undef P
 #define NPTAB (sizeof PTAB / sizeof PTAB[0])

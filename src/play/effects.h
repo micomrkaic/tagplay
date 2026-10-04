@@ -83,21 +83,29 @@ typedef struct {
 } shellac_params;
 
 typedef struct {
-    double bw_hz;         /* received audio bandwidth (channel + IF)   */
-    double hp_hz;         /* low corner of the broadcast chain         */
-    double depth;         /* modulation depth; > 1.0 = overmodulation
-                             (envelope-detector fold distortion)       */
-    double comp;          /* 0..1 broadcast compression / receiver AGC */
+    double bw_hz;         /* receiver IF half-bandwidth = audio cutoff;
+                             8th-order Butterworth                     */
+    double hp_hz;         /* receiver coupling caps + small speaker    */
+    double depth;         /* modulation depth after the TX clipper;
+                             > 1.0 overmodulates -> carrier cutoff     */
+    double comp;          /* 0..1 transmitter AGC, = 1 - 1/ratio       */
     double static_per_s;  /* atmospheric crash rate                    */
-    double static_db;
-    double hiss_db;       /* post-detector receiver noise              */
-    double fade_db;       /* skywave fade depth (0.15 Hz); 0 = off     */
+    double static_db;     /* crash level, dB re carrier                */
+    double snr_db;        /* carrier-to-noise in the IF band, dB       */
+    double fade_db;       /* skywave carrier fade depth, dB; 0 = off   */
+    double fade_hz;       /* fading rate                               */
+    double whistle_db;    /* adjacent-channel heterodyne re carrier,
+                             dB; <= -120 = off                         */
+    double whistle_hz;    /* channel spacing: 10k Americas, 9k else    */
+    double det_rc_us;     /* detector RC: diagonal clipping            */
+    double acdc;          /* detector Rac/Rdc: negative-peak clipping  */
 } am_params;
 
 extern const vinyl_params   VINYL_DEFAULTS;
 extern const tape_params    TAPE_DEFAULTS;
 extern const shellac_params SHELLAC_DEFAULTS;
 extern const am_params      AM_DEFAULTS;
+extern const am_params      AM_NIGHT;       /* skywave preset */
 
 /* In-place, one channel. 'channel' decorrelates hiss between channels
  * while keeping crackle correlated (groove damage hits both channels;
