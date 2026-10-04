@@ -899,12 +899,24 @@ static void tick(gui *g) {
 
 /* ---- selftest ---- */
 
+/* Synthetic input bypasses SDL's event queue: under sdl2-compat
+ * (Homebrew's "sdl2" on macOS is a shim over SDL3) SDL_PushEvent's
+ * SDL2->SDL3 translation hands SDL3 a NULL event and crashes. The
+ * selftest tests OUR dispatch, so events go straight to handle()
+ * through a private ring -- same structs, same handler, no shim. */
+#define STQ_MAX 512
+static SDL_Event stq[STQ_MAX];
+static int stq_n;
+
+static void push_ev(const SDL_Event *e) {
+    if (stq_n < STQ_MAX) stq[stq_n++] = *e;
+}
 static void push_text(const char *s) {
     for (; *s; s++) {
         SDL_Event e = { 0 };
         e.type = SDL_TEXTINPUT;
         e.text.text[0] = *s;
-        SDL_PushEvent(&e);
+        push_ev(&e);
     }
 }
 static void push_key(SDL_Keycode k, Uint16 mod) {
@@ -912,10 +924,12 @@ static void push_key(SDL_Keycode k, Uint16 mod) {
     e.type = SDL_KEYDOWN;
     e.key.keysym.sym = k;
     e.key.keysym.mod = mod;
-    SDL_PushEvent(&e);
+    push_ev(&e);
 }
 static void pump(gui *g) {
     SDL_Event e;
+    for (int i = 0; i < stq_n; i++) handle(g, &stq[i]);
+    stq_n = 0;
     while (SDL_PollEvent(&e)) handle(g, &e);
     tick(g);
 }
