@@ -42,16 +42,39 @@ tagplay-gui: $(CORE_OBJ) $(PLAY_NOMAIN) $(GUI_OBJ)
 tagview: $(CORE_OBJ) $(VIEW_OBJ)
 	$(CC) $(CFLAGS) -o $@ $(CORE_OBJ) $(VIEW_OBJ) $(shell pkg-config --libs libpcre2-8) -lpthread -lm
 
-src/%.o: src/%.c $(wildcard src/*.h)
+HDRS := $(wildcard src/core/*.h src/play/*.h src/view/*.h src/gui/*.h)
+src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
 	rm -f tagplay tagview tagplay-gui src/core/*.o src/play/*.o src/view/*.o src/gui/*.o
 
-install: tagplay
-	install -m 755 tagplay $(HOME)/.local/bin/
+# ---- install ---------------------------------------------------------
+# Binaries are self-contained (font embedded; stations and cache live
+# under XDG dirs), so an install is the three executables plus the man
+# pages. Default PREFIX is per-user; override for a system install:
+#   sudo make install PREFIX=/usr/local
+PREFIX ?= $(HOME)/.local
+BINDIR  = $(DESTDIR)$(PREFIX)/bin
+MANDIR  = $(DESTDIR)$(PREFIX)/share/man/man1
 
-.PHONY: clean install
+install: all
+	install -d $(BINDIR) $(MANDIR)
+	install -m 755 tagplay tagview tagplay-gui $(BINDIR)/
+	install -m 644 man/tagplay.1 man/tagview.1 man/tagplay-gui.1 $(MANDIR)/
+	@echo "installed: tagplay, tagview, tagplay-gui -> $(BINDIR)"
+	@echo "man pages -> $(MANDIR)"
+	@command -v tagplay >/dev/null 2>&1 || \
+	  echo "note: $(PREFIX)/bin is not on your PATH"
+	@man -w tagplay >/dev/null 2>&1 || \
+	  echo "note: if 'man tagplay' fails, add: export MANPATH=\"$(PREFIX)/share/man:$$MANPATH\""
+
+uninstall:
+	rm -f $(BINDIR)/tagplay $(BINDIR)/tagview $(BINDIR)/tagplay-gui
+	rm -f $(MANDIR)/tagplay.1 $(MANDIR)/tagview.1 $(MANDIR)/tagplay-gui.1
+	@echo "removed from $(BINDIR) and $(MANDIR)"
+
+.PHONY: clean install uninstall
 
 # ---- the browser build (MG-d) --------------------------------------
 # Needs emscripten (apt install emscripten) and the wasm deps:

@@ -1,0 +1,302 @@
+.TH TAGPLAY 1 "2026-11-02" "tagplay 0.9" "User Commands"
+.SH NAME
+tagplay \- query-driven terminal music player with analog-media DSP
+.SH SYNOPSIS
+.B tagplay
+.RI [ options ]
+.IR MUSIC_DIR ...
+.br
+.B tagplay
+.B \-q
+.I EXPR
+.RB [ \-s
+.IR FIELDS ]
+.RB [ \-t ]
+.IR MUSIC_DIR ...
+.SH DESCRIPTION
+.B tagplay
+scans the given directories for FLAC, MP3 and WAV files, reads their
+tags into a cache, and presents an fzf-style incremental search over
+the whole library: the match count collapses as you type, and
+.B Enter
+plays the result.
+Playback runs through the audiotard DSP chain (tube, tape, vinyl,
+shellac-78 and AM-radio emulations, a ten-band EQ and shelving tone
+controls), with a live spectrum trace available in the terminal.
+Internet radio stations ride along in the same queue.
+.PP
+The first scan of a large library takes a while; subsequent runs
+re-read only files whose size or mtime changed.
+.SH OPTIONS
+.TP
+.BI \-q " EXPR"
+One-shot mode: print the paths matching the query expression and
+exit.  Suitable for scripting and piping.
+.TP
+.BI \-s " FIELDS"
+Sort specification for
+.BR \-q ,
+a comma-separated field list; a leading
+.B \-
+means descending (e.g.\&
+.BR year,album,track " or " \-year,title ).
+.TP
+.B \-t
+With
+.BR \-q :
+print artist/title/album/length columns instead of bare paths.
+.TP
+.BI \-C " PATH"
+Use
+.I PATH
+as the tag cache (default
+.IR ~/.cache/tagplay/cache.bin ).
+.TP
+.B \-n
+No cache: scan fresh and do not write a cache.
+.TP
+.BI \-D " FILE"
+Debug: decode
+.I FILE
+fully, print rate, channels, duration, peak and a seek test, exit.
+.TP
+.BI \-T " FILE"
+Debug: dump
+.IR FILE 's
+tags (escaped), format and duration, exit.
+.SH QUERY LANGUAGE
+The same expressions work interactively, in
+.BR \-q ,
+and in
+.BR tagplay-gui (1).
+.TP
+.I bare words
+Substring match on any field; several words are an implicit AND.
+.TP
+.BI field " = " value
+Exact match, case-insensitive;
+.B !=
+negates.
+.TP
+.BI field " ~ \(dq" regex \(dq
+PCRE2 regular expression, case-insensitive.
+.TP
+.BR year<1990 ", " length>=3:00 ", " rate=96000
+Numeric comparisons
+.RB ( < " " <= " " > " " >= " " = " " != ).
+.TP
+.B & | ! ( )
+Boolean operators;
+.B ,
+is a synonym for
+.BR & .
+.PP
+Fields: any tag key present in the library, plus the pseudo-fields
+.BR path ", " format ", " length ", " rate ", " year ", " track ", "
+.BR disc .
+Use the
+.B t
+key on a cursored track to see exactly which fields it carries.
+.SH VIEWS AND KEYS
+.B Tab
+cycles query \(-> list \(-> queue \(-> query.
+.TP
+.B query view
+Type to filter;
+.B Enter
+plays the matches (replacing the queue);
+.B Ctrl-U
+clears the line;
+.B :
+starts a command.
+.TP
+.B list view
+.BR j / k /arrows
+move;
+.B Space
+toggles the
+.B [x]
+selection mark;
+.B a
+selects all shown;
+.B i
+inverts;
+.B c
+clears;
+.B Enter
+plays the selection (consuming it) or, with nothing marked, the
+matches;
+.B t
+shows every tag on the cursored track.
+.TP
+.B queue view
+Shows what is playing:
+.BR j / k
+move,
+.B Enter
+jumps,
+.B Space
+pauses,
+.BR left / right
+seek 10 s,
+.BR < / >
+seek 60 s,
+.B r
+restarts the track,
+.B s
+stops,
+.BR J / K
+reorder the queue,
+.B t
+inspects tags,
+.B a
+shows embedded art.
+.SH COMMANDS
+Every
+.B :
+command works identically here and in
+.BR tagplay-gui (1).
+.SS Search and curation
+.TP
+.B :sel
+Show only the marked tracks, in playlist order, for editing
+.RB ( Space
+unmarks); any typing returns to normal search.
+.TP
+.BI :sort " f1,-f2"
+Sort matches; leading
+.B \-
+descending; bare
+.B :sort
+clears.
+.TP
+.BI :group " KEY"
+Group matches under dim headers (any tag key;
+.B :group off
+clears).
+.TP
+.BI :cols " +year -album"
+Toggle row fields (album year genre fmt dur track); persists in
+.IR ~/.config/tagplay/config .
+.SS Playlists
+.TP
+.BI :save " NAME\fR, \fP" :load " NAME\fR, \fP" :lists "\fR, \fP" :clear
+Plain
+.B .m3u
+files under
+.IR ~/.config/tagplay/playlists/ .
+.B :save
+keeps the selection (or, with none, the matches);
+.B :load
+loads into the selection.
+.SS Transport
+.TP
+.BR :p ", " :n ", " :b ", " :stop
+Pause/resume, next, previous, stop (queue kept).
+.B Ctrl-P/N/B
+do the same without clearing the query.
+.TP
+.BI :seek " 1:23"
+Absolute seek in the current track.
+.TP
+.BR :vol " 80, " :vol " +5, " :vol " \-5"
+Volume, absolute or relative percent.
+.SS Audiotard DSP
+.TP
+.BI ":dsp " "tube\fR|\fPtape\fR|\fPvinyl\fR|\fPshellac\fR|\fPam AMOUNT"
+Character modes; amount 0..1 (0.5 = the calibrated preset).  For
+.B am
+the amount is a day\(->night morph: 1.0 is night-time skywave DX with
+deep selective fades and the adjacent channel's heterodyne whistle.
+.TP
+.BI :dsp " eq G1..G10"
+Ten ISO octave bands, dB (\-18..+18).
+.TP
+.BI :dsp " bt BASS TREBLE"
+Shelving tone controls, dB (\-12..+12).
+.TP
+.B :dsp off
+Bypass (crossfaded; mode changes never pop).
+.TP
+.BI :dsp " set NAME VALUE"
+Any granular parameter of the current mode; see
+.B :dsp show
+for names, units and ranges.
+.TP
+.BR ":dsp params" ", " ":dsp meas" ", " ":dsp show"
+One-line parameter dump; THD/H2/H3/noise/SNR measurement on a shadow
+chain; full parameter-and-measurement page.
+.SS Spectrum (terminal)
+.TP
+.B :fft
+Toggle the braille spectrum trace under the status area: clean
+signal dim, processed signal bright \(em the same analyzer as the
+GUI.
+.B :fft ema A
+sets exponential averaging (0 raw .. 1 slow);
+.B :fft avgn N
+a plain mean over the last N frames (2..64);
+.BR ":fft on" / off
+explicit.
+.SS Radio and misc
+.TP
+.BI ":radio add " "URL NAME\fR, \fP" ":radio rm " NAME
+Manage stations
+.RI ( ~/.config/tagplay/stations ,
+one \(dqurl TAB name\(dq per line; a starter set is seeded on first
+run).
+.TP
+.BR :ls ", " :stats ", " :help ", " :q
+List matches; tag-key frequency; built-in help; quit.
+.SH DSP NOTES
+Effects render in a block pipeline with cosine crossfades at every
+seam: mode switches, parameter drags, and the off\(<->effect
+boundary are all click-free, and each mode is loudness-matched to
+the clean signal by a measured RMS gain.  All filter corners are
+clamped below Nyquist, so low-rate material (22.05 kHz and below)
+stays finite.  If the audio device refuses a sample rate, playback
+continues silently but says so loudly in the message line and
+retries on the next track.
+.SH FILES
+.TP
+.I ~/.cache/tagplay/cache.bin
+Tag cache (versioned; rebuilds automatically on format change).
+.TP
+.I ~/.cache/tagplay/stderr.log
+Library chatter, kept off the screen.
+.TP
+.I ~/.config/tagplay/playlists/*.m3u
+Saved playlists (portable).
+.TP
+.I ~/.config/tagplay/stations
+Radio stations, \(dqurl TAB name\(dq per line.
+.TP
+.I ~/.config/tagplay/config
+Persisted display settings
+.RB ( :cols ).
+.SH ENVIRONMENT
+.TP
+.BR XDG_CACHE_HOME ", " XDG_CONFIG_HOME
+Relocate the directories above.
+.SH EXAMPLES
+Everything from 96 kHz FLACs, grouped by album:
+.PP
+.nf
+    tagplay ~/music
+    rate=96000
+    :group album
+.fi
+.PP
+All pre-1800 FLAC tracks as a sorted table, for a script:
+.PP
+.nf
+    tagplay \-q 'year<1800 & format=flac' \-s year,album,track \-t ~/music
+.fi
+.SH SEE ALSO
+.BR tagplay-gui (1),
+.BR tagview (1)
+.PP
+Source and README:
+.I https://github.com/micomrkaic/tagplay
+.SH AUTHOR
+Mico Mrkaic.  GPL-3.0-or-later.

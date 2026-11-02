@@ -1,0 +1,60 @@
+.TH TAGVIEW 1 "2026-11-02" "tagplay 0.9" "User Commands"
+.SH NAME
+tagview \- query-driven photo metadata browser
+.SH SYNOPSIS
+.B tagview
+.RI [ options ]
+.IR PHOTO_DIR ...
+.SH DESCRIPTION
+.B tagview
+is the photo face of the tagplay browser core: it scans directories
+of images, reads EXIF, IPTC, XMP and PNG metadata, and offers the
+same incremental query language as
+.BR tagplay (1)
+over fields such as
+.BR tag ", " camera ", " city ", " year ", " width ", " height ", "
+.BR mpix " and " format .
+.PP
+Interactively: type to filter (e.g.\&
+.IR "tag=alps & year>2000 & camera~nikon" ),
+.B Tab
+moves to the list,
+.B Enter
+or
+.B a
+shows the image (via
+.BR chafa (1)
+when available),
+.B t
+inspects every tag on the cursored photo.
+.SH OPTIONS
+.TP
+.BI \-q " EXPR"
+One-shot query: print matching paths and exit.
+.TP
+.BI \-s " FIELDS"
+Sort spec for
+.B \-q
+(e.g.\&
+.BR date,\-width ).
+.TP
+.B \-t
+With
+.BR \-q :
+print title/camera/date/dimensions columns.
+.TP
+.BI \-C " PATH"
+Cache file (default
+.IR ~/.cache/tagview/cache.bin ).
+.TP
+.B \-n
+No cache.
+.SH FILES
+.TP
+.I ~/.cache/tagview/cache.bin
+Metadata cache.
+.SH SEE ALSO
+.BR tagplay (1),
+.BR tagplay-gui (1)
+.SH AUTHOR
+Mico Mrkaic.  GPL-3.0-or-later.

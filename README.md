@@ -38,12 +38,20 @@ One process, one binary, three libraries.
   come out right), every tag sanitized at ingest so no file can inject
   control sequences into your terminal.
 
-## Build
+## Build and install
 
     make            # Linux: libflac-dev libpcre2-dev libsdl2-dev libcurl4-openssl-dev
                     #        optional: libfaad-dev (AAC radio), chafa (best art)
                     # macOS: brew install flac pcre2 sdl2 curl pkg-config
-    make install    # copies to ~/.local/bin
+    make install    # tagplay, tagview, tagplay-gui -> ~/.local/bin
+                    # man pages -> ~/.local/share/man/man1
+    make uninstall  # removes exactly what install put there
+
+The binaries are self-contained (the GUI font is embedded; stations,
+playlists and the cache live under the XDG directories), so they run
+from anywhere once installed. `make install PREFIX=/usr/local` for a
+system-wide install. If `man tagplay` can't find the page, add
+`export MANPATH="$HOME/.local/share/man:$MANPATH"` to your shell rc.
 
 minimp3 and the audiotard DSP are vendored; there is nothing else.
 Builds clean with `-Wall -Wextra -Wpedantic`.
@@ -59,7 +67,7 @@ later runs re-read only changed files. Then:
     Enter                    play the matches (opens the queue view)
     Tab                      cycle query -> list -> queue -> query
     :dsp tape 0.4            tape emulation, live
-    :help                    everything else
+    :help                    everything else (also: man tagplay)
 
 One-shot scripting mode:
 
@@ -303,6 +311,7 @@ the years; prune with `:radio rm`.
     ~/.cache/tagplay/stderr.log       library chatter, kept off your screen
     ~/.config/tagplay/playlists/*.m3u saved playlists (portable)
     ~/.config/tagplay/stations        url <TAB> name per line
+    ~/.config/tagplay/config          persisted display settings (:cols)
 
 ## tagplay-gui
 

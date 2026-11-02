@@ -1,0 +1,47 @@
+.TH TAGPLAY-GUI 1 "2026-11-02" "tagplay 0.9" "User Commands"
+.SH NAME
+tagplay-gui \- SDL2 face of tagplay with instrument panel
+.SH SYNOPSIS
+.B tagplay-gui
+.RB [ \-\-selftest ]
+.IR MUSIC_DIR ...
+.SH DESCRIPTION
+.B tagplay-gui
+is the graphical face of
+.BR tagplay (1):
+the same library core, the same controller, the same query language
+and
+.B :
+commands, rendered with SDL2.  Everything in
+.BR tagplay (1)'s
+QUERY LANGUAGE, VIEWS AND KEYS and COMMANDS sections applies
+verbatim \(em the two faces share one code path \(em with these
+additions:
+.TP
+.B F2
+Toggles the instrument panel: full-file waveform with playback
+cursor, dual spectrum analyzer (clean signal dim, processed signal
+accented, EMA or boxcar averaging), the effect-mode buttons, the
+macro amount knob, per-parameter sliders for the current mode, and a
+live THD / H2 / H3 / noise readout re-measured shortly after each
+tweak.
+.TP
+.B mouse
+Mode buttons, sliders, the volume bar, seek bar and transport
+buttons are clickable; sliders drag.
+.TP
+.B \-\-selftest
+Run the scripted headless self-test against a fixture library made
+by
+.IR tests/make_fixtures.sh ;
+it refuses a real music collection.  Exits non-zero on any failed
+check.
+.SH FILES
+Shares every file in
+.BR tagplay (1)'s
+FILES section, cache and playlists included.
+.SH SEE ALSO
+.BR tagplay (1),
+.BR tagview (1)
+.SH AUTHOR
+Mico Mrkaic.  GPL-3.0-or-later.
