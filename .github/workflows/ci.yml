@@ -1,0 +1,26 @@
+# tagplay CI: build the three programs, then run the query, photo-metadata
+# and radio-decoder test batteries against generated fixtures.
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libflac-dev libpcre2-dev libsdl2-dev libcurl4-openssl-dev libfaad-dev
+          flac lame python3-pil libimage-exiftool-perl
+      - name: build
+        run: make -j4
+      - name: query tests
+        run: tests/make_fixtures.sh testlib && tests/run.sh testlib
+      - name: photo metadata tests
+        run: tests/make_photo_fixtures.sh phototest && tests/run_view.sh phototest
+      - name: radio decoder tests
+        run: tests/run_radio.sh

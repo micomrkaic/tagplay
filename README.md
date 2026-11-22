@@ -2,6 +2,8 @@
 
 # tagplay
 
+[![ci](https://github.com/micomrkaic/tagplay/actions/workflows/ci.yml/badge.svg)](https://github.com/micomrkaic/tagplay/actions/workflows/ci.yml)
+
 **fzf for your music library, with a tape deck in the signal path.**
 
 tagplay is a terminal music player built around one idea: finding music
